@@ -108,8 +108,8 @@ endpoint is routed to it. This keeps every credential exchange on the environmen
 #### Reverse proxy
 
 Proposed: **a hardened, `Rewrite`-only proxy middleware for Echo v5**, contributed to `go-echo-starter`
-as `pkg/middleware/proxy`, with one instance bound per upstream. Echo keeps listeners, middleware, and
-routing; only the forwarding step is replaced.
+as `internal/middleware/proxy`, with one instance bound per upstream. Echo keeps listeners, middleware,
+and routing; only the forwarding step is replaced.
 
 Echo's own `middleware.Proxy` is not reused as-is. It builds on `httputil.NewSingleHostReverseProxy`
 (`middleware/proxy.go` line 423 in v5.3.1), and that constructor returns a proxy driven by the deprecated
@@ -130,7 +130,7 @@ always builds `httputil.ReverseProxy` with `Rewrite`, strips inbound forwarding 
 client address from Echo's configured `IPExtractor`:
 
 ```go
-// pkg/middleware/proxy -- go-echo-starter
+// internal/middleware/proxy -- go-echo-starter
 type Config struct {
     Skipper        middleware.Skipper
     Target         *url.URL                        // upstream origin; required
@@ -204,11 +204,10 @@ only to logs.
   v4.1.5, for JWKS parsing and JWS verification. Its `go.mod` has no requirements, measured on 2026-09-15.
 - **Kept from the starter** — Echo v5.3.1, which links only `golang.org/x/time` (rate limiter),
   `golang.org/x/net` (`netutil.LimitListener`), zerolog, `errorx`, and `yaml.v3`.
-- **New starter package** — `github.com/servercurio/go-echo-starter/pkg/middleware/proxy`. The starter
-  exports nothing today (every package is `internal/`) and reaches services by seeding rather than import,
-  so publishing this one package makes `go-echo-starter` an importable module for the first time. It adds
-  no transitive requirements beyond Echo and the standard library, both already linked. See Open
-  questions.
+- **New starter package** — `internal/middleware/proxy` in `go-echo-starter`, arriving here by seeding
+  like the rest of the starter. It adds no module: it needs only Echo and the standard library, both
+  already linked. The starter stays a template with nothing exported, rather than becoming an importable
+  module with the compatibility obligation that implies.
 - **Removed from the starter** — `internal/database` (pgx, bun, goose), swaggo and `cmd/openapi-gen`
   (replaced by embedded contracts, per 0002), ACME `autocert`, and `Masterminds/semver`.
 - **Measured footprint** — the starter's `cmd/daemon` links 49 third-party modules (151 in
@@ -345,9 +344,9 @@ omitted here.
 ### Build, release & versioning
 
 - **Bootstrap** from `go-echo-starter`, removing the database, swaggo, ACME, and HTTP-redirect code. The
-  binary is `cmd/rackmarshal-gateway`. The proxy middleware is the one part not copied: it is imported from
-  the starter's `pkg/middleware/proxy`, so a hardening fix reaches every service through a version bump
-  instead of a re-seed.
+  binary is `cmd/rackmarshal-gateway`, and `internal/middleware/proxy` is copied forward with everything
+  else. Seeding does not propagate later fixes, so a hardening change to the starter's middleware has to be
+  ported deliberately; the gateway's own smuggling tests (below) are what catch a stale copy.
 - **Contract coupling** — a new `operator` or `agent` operation is reachable only after the gateway
   upgrades `rackmarshal-api-schema`. A 100-series workflow opens that pull request on each schema release, like
   `rackmarshal-sdk`'s regeneration workflow.
@@ -370,8 +369,9 @@ omitted here.
   unknown `kid` refresh throttling.
 - **Smuggling and hygiene** — `Connection: X-Rackmarshal-Principal`, spoofed `X-Forwarded-For`, encoded
   slashes, and duplicate `Authorization` headers. The first two are also table tests in the starter's
-  `pkg/middleware/proxy`, asserting the added header survives the `Connection` list and that the client's
-  forwarding values are discarded rather than appended.
+  `internal/middleware/proxy`, asserting the added header survives the `Connection` list and that the
+  client's forwarding values are discarded rather than appended. Both suites are kept, because the seeded
+  copy is what actually runs here.
 - **Fuzzing** of the path normalizer and principal encoder; `-race`; benchmarks of the per-request
   revocation re-check.
 
@@ -383,6 +383,10 @@ omitted here.
   above rather than a fork of the middleware.
 - **A gateway-local `httputil.ReverseProxy` per upstream** — the same hardening with no starter change,
   but it leaves every other seeded service on the unsafe default and gives the fix nowhere to live.
+- **Publishing the middleware as `pkg/middleware/proxy`** — the starter exports nothing today, so this
+  would make it an importable module for the first time and let a hardening fix reach services through a
+  version bump. Rejected for now: it takes on a compatibility obligation for the one package, and the
+  starter is a template that services are seeded from, not a dependency they track.
 - **Plain `net/http` without Echo** — removes one module, but gives up the starter's middleware, config,
   and rate limiter, and diverges from every other service.
 - **Envoy or another off-the-shelf proxy** — mature, but not Go, and it cannot build route tables from
@@ -415,10 +419,6 @@ omitted here.
   revoke its certificate.
 - **Role names** in security requirements, or a dedicated `x-rackmarshal-permission` extension?
 - **Rate limits** across replicas — are per-replica limits acceptable at expected scale?
-- **Starter as a module** — publishing `pkg/middleware/proxy` makes `go-echo-starter` importable, which it
-  has never been, and takes on a compatibility obligation for that package. The alternative is to keep the
-  middleware `internal/` and let it arrive by seeding like everything else, at the cost of fixes not
-  propagating to already-seeded services.
 
 ## References
 
