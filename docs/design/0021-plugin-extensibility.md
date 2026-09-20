@@ -8,8 +8,9 @@
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-20
 - **Summary:** Plugins become a paired extension: an agent half that enforces a kind on an endpoint and an
-  optional provisioner half that validates, interprets results, and proposes follow-up work. One `Plugin`
-  document and one version pin both halves. Apply results travel back as bounded, schema-validated
+  required provisioner bundle carrying its schemas and policy, and an optional provisioner service that
+  interprets results and proposes follow-up work. One `Plugin` document and one version pin all of it.
+  Apply results travel back as bounded, schema-validated
   payloads instead of digests alone, and each half may ship Rego that the host evaluates, scoped to the
   kinds the plugin was granted and able only to deny.
 
@@ -45,7 +46,9 @@ things the design has since needed, three of which the existing documents alread
 **Goals**
 
 - One plugin, two optional halves, one version, one verification chain.
-- A bounded, schema-validated result payload from a plugin's agent half to its provisioner half.
+- Every plugin usable at admission, because every plugin ships its schemas and policy to the control
+  plane whether or not it runs anything there.
+- A bounded, schema-validated result payload from a plugin's agent half back to the control plane.
 - Plugin-supplied Rego on both sides, scoped so a plugin can constrain only its own kinds.
 - A provisioner-side process model that works on every deployment target 0005 supports.
 - No new trust root, and no path by which a plugin gains authority it was not granted.
@@ -56,24 +59,25 @@ things the design has since needed, three of which the existing documents alread
 - A plugin marketplace, discovery, or dependency resolution between plugins.
 - Plugin-authored schemas replacing `rackmarshal-api-schema` as the source of truth for built-in kinds
   ([0020](0020-desired-state-kinds.md)).
-- Letting a plugin apply state directly. A provisioner half proposes; the platform decides.
+- Letting a plugin apply state directly. A provisioner service proposes; the platform decides.
 
 ## Proposal
 
 ### Responsibilities
 
-- **`Plugin` document** — supersedes `AgentPlugin`, naming both halves at one version with one publisher.
-- **Provisioner plugin host** — verifies, launches, and supervises provisioner-side halves as separate
-  processes, and routes validation, interpretation, and proposal calls to them.
-- **Result channel** — carries a bounded, schema-validated payload from agent half to provisioner half.
+- **`Plugin` document** — supersedes `AgentPlugin`, naming every artifact at one version with one publisher.
+- **Provisioner bundle** — required of every plugin: the schemas and Rego the control plane needs to
+  validate and police the plugin's kinds without executing any of its code.
+- **Provisioner plugin host** — verifies, launches, and supervises the optional provisioner service as a
+  separate process, and routes interpretation and proposal calls to it.
+- **Result channel** — carries a bounded, schema-validated payload from the agent half to the control plane.
 - **Policy layer** — compiles and evaluates plugin-supplied Rego on both sides, scoped and denial-only.
-- **Pairing** — refuses to dispatch a bundle whose agent half declares a provisioner half that is absent.
 
 ### Interfaces
 
 #### The `Plugin` document
 
-`AgentPlugin` becomes `Plugin`, with the halves under one `spec` and one `version`:
+`AgentPlugin` becomes `Plugin`, with everything a plugin ships under one `spec` at one `version`:
 
 ```yaml
 apiVersion: rackmarshal.servercurio.com/v1alpha1
@@ -83,29 +87,73 @@ spec:
   publisher: acme                       # PluginPublisher, unchanged (0011)
   version: 0.4.0
   baseURL: https://github.com/acme/rackmarshal-plugin-bigip/releases/download/v0.4.0
-  pairing: required                     # required | optional | agent-only | provisioner-only
-  agent:
+  agent:                                # optional: absent for control-plane-only kinds
     sha256: { linux/amd64: "…", linux/arm64: "…" }
     grant: { capabilities: [resource:acme.example.com/v1alpha1/VirtualServer] }
   provisioner:
-    image: ghcr.io/acme/rackmarshal-plugin-bigip@sha256:…   # kubernetes, podman, docker
-    sha256: { linux/amd64: "…" }                      # package and windows targets
-    grant: { capabilities: [validate, interpret, propose] }
+    bundle:                             # REQUIRED — schemas and policy, no process
+      sha256: "…"
+    service:                            # optional — the running half
+      image: ghcr.io/acme/rackmarshal-plugin-bigip@sha256:…   # kubernetes, podman, docker
+      sha256: { linux/amd64: "…" }                      # package and windows targets
+      grant: { capabilities: [validate, interpret, propose] }
 ```
 
 One document and one `version` is the whole point. Two documents — an `AgentPlugin` and a sibling
 `ProvisionerPlugin` — would let the halves drift to different versions while each remains individually
 valid, and the failure would surface as a result payload the provisioner half cannot parse, at apply
-time, on one endpoint. Pinning both halves to one release makes that unrepresentable.
+time, on one endpoint. Pinning everything to one release makes that unrepresentable.
 
-`pairing` states what the plugin requires rather than what a deployment happens to have:
+The shape carries the requirement rather than a field asserting it: `spec.provisioner.bundle` is
+mandatory, so a `Plugin` without one does not validate. What varies is whether a plugin also ships a
+running half:
 
-| `pairing` | Meaning |
-|-----------|---------|
-| `agent-only` | No provisioner half. Today's plugins, unchanged |
-| `provisioner-only` | Control-plane kinds with nothing to run on an endpoint |
-| `optional` | The provisioner half adds interpretation; its absence degrades rather than fails |
-| `required` | Admission rejects a `DirectiveSet` using this plugin's kinds unless both halves are installed |
+| Ships | Meaning |
+|-------|---------|
+| `agent` + `provisioner.bundle` | The common case. The provisioner validates and polices the kind without running plugin code |
+| `agent` + `provisioner.bundle` + `provisioner.service` | Adds result interpretation and proposals |
+| `provisioner.bundle` + `provisioner.service` | Control-plane kinds with nothing to run on an endpoint |
+
+#### The provisioner bundle
+
+**Every plugin ships one, even when it has no provisioner-side process.** The bundle is passive data —
+signed, digest-pinned, and verified at import like any other asset — and it is what lets the control
+plane reason about a kind it did not define:
+
+```
+bundle/
+├── manifest.yaml            # the same manifest the agent half embeds
+├── schemas/
+│   └── acme.example.com/v1alpha1/VirtualServer.json
+│       # one per kind in the agent half's resource: capabilities, plus the result schema
+└── policy/
+    ├── admission.rego       # package rackmarshal.plugin.bigip.admission
+    └── host.rego            # package rackmarshal.plugin.bigip.host
+```
+
+The alternative is that the provisioner passes a spec it cannot read straight through to a bundle it
+signs. That breaks the property 0011 is built on — "fail-closed policy at write time, before dispatch,
+and (via the bundle) on the host" — in the one case where it matters most, because a plugin kind is
+exactly the kind nobody on the platform wrote. A malformed or malicious spec would then be caught on
+each endpoint, after dispatch, once per host, instead of once at admission. Requiring the bundle keeps
+admission uniform: **every kind is schema-validated and policy-checked before anything is signed, whether
+the platform defined it or a third party did.**
+
+Two consistency checks run at import, because a bundle that does not cover its own plugin is worse than
+none:
+
+- Every kind named in an agent half's `resource:` capability has a schema in the bundle. A capability
+  without a schema fails import with `schema_missing`.
+- Every schema in the bundle corresponds to a declared capability. A schema without a capability fails
+  with `schema_unclaimed`, so a bundle cannot smuggle a definition for a kind the plugin was never
+  granted.
+
+The bundle also carries the result schema that both ends validate against (see The result round trip), so
+a plugin with no running provisioner half still gets its results checked at the control plane.
+
+Requiring this costs a plugin author almost nothing — the schemas and Rego already have to exist for the
+agent half to be useful — and it means the expensive half of this proposal, the plugin host below, is
+needed only by plugins that genuinely interpret or propose.
 
 #### Provisioner plugin host
 
@@ -236,11 +284,12 @@ outcome rather than a corner case.
 
 #### Plugin-supplied policy
 
-Each half may embed Rego. It is carried where that half's trust already comes from: the agent half's
-policy travels in the manifest that `GetManifest` returns, "trusted only as far as the verified
-publisher" (0013), and the provisioner half's is extracted from the release artifact at import and
-verified through the same sigstore-go chain that already writes `plugin_verifications` (0011). One trust
-root, two delivery paths, no new verification code.
+Every plugin ships Rego, because the provisioner bundle is mandatory and `policy/` is part of it. It is
+carried where each side's trust already comes from: the agent half's copy travels in the manifest that
+`GetManifest` returns, "trusted only as far as the verified publisher" (0013), and the control plane's
+comes from the bundle, verified at import through the same sigstore-go chain that already writes
+`plugin_verifications` (0011). One trust root, two delivery paths, no new verification code — and no
+executable involved in either.
 
 ```yaml
 # manifest.yaml, additions
@@ -283,18 +332,22 @@ The resulting stacks, with the new layer in bold:
 - **Rackmarshal** — `rackmarshal-agent-plugin-sdk` gains the provisioner-side services and the `serve`
   helpers for them; `rackmarshal-api-schema` gains the `Plugin` kind; `rackmarshal-provisioner` gains the
   plugin host.
-- **Third-party** — none new in `rackmarshal-provisioner`. It already links OPA v1.20.2 (26 modules,
-  0011) and sigstore-go for import verification. The gRPC and go-plugin stack, measured at 14 linked
-  modules in 0013, moves into the provisioner with the plugin host; that is the real cost of this
-  proposal and it is recorded in Open questions, because 0011's module budget did not assume it.
+- **Third-party** — the mandatory path adds **nothing**. Validating a bundle's schemas and evaluating its
+  Rego uses the jsonschema and OPA v1.20.2 that `rackmarshal-provisioner` already links (0011), and
+  verifying the bundle uses the sigstore-go it already links for imports. This is the strongest argument
+  for splitting the bundle from the service: the part every plugin must ship costs no new dependency.
+  The optional plugin host does carry a cost — 0013's gRPC and go-plugin stack, measured at 14 linked
+  modules — and because it is now needed only by plugins that interpret or propose, putting it behind a
+  build tag is practical rather than theoretical. See Open questions.
 - **Plugin authors** — `rackmarshal-plugin-starter` (0015) grows a provisioner-half example and a second
-  fake host, so the local harness exercises both sides and their pairing.
+  fake host, so the local harness exercises the bundle, the optional service, and their pinning together.
 
 ### Data & storage
 
 | Table | Change |
 |-------|--------|
-| `plugin_verifications` | Gains a `side` column; one row per verified half |
+| `plugin_verifications` | Gains an `artifact` column; one row per verified artifact, bundle included |
+| `plugin_bundles` | Verified schemas and compiled policy per plugin version, keyed by digest |
 | `enforcement_reports` | Gains `result_json`, bounded, inside the existing monthly partitions |
 | `endpoint_status` | Conditions may now originate from `InterpretResult` |
 | `document_revisions` | Gains plugin-attributed revisions from `Propose` |
@@ -305,9 +358,9 @@ and is rebuilt on a pin change like any other bundle input.
 ### Security
 
 - **No new trust root.** Both halves are verified against the same `PluginPublisher` identity, at import,
-  by the code that already does it. A half that fails verification is not installed, and `pairing:
-  required` then fails admission rather than running half a plugin.
-- **No new authority.** A provisioner half receives a capability grant the same way an agent half does —
+  by the code that already does it. An artifact that fails verification is not installed, and a plugin
+  missing a verified bundle fails import rather than running with an unpoliced kind.
+- **No new authority.** A provisioner service receives a capability grant the same way an agent half does —
   the intersection of its manifest and the operator's policy, never more than the manifest declares
   (0013). `validate`, `interpret`, and `propose` are separate capabilities, so a plugin that only needs to
   read results cannot propose state.
@@ -317,10 +370,11 @@ and is rebuilt on a pin change like any other bundle input.
   (rule 1 above) rather than by review.
 - **Result payloads are tenant data**, handled as 0009 handles facts: never logged, never in metric
   labels, size and digest only in traces.
-- **Process isolation.** A provisioner-side half runs as its own user with no database credentials and no
-  network grant by default, reachable only over the socket the host created.
+- **Process isolation.** A provisioner service runs as its own user with no database credentials and no
+  network grant by default, reachable only over the socket the host created. A plugin that ships only a
+  bundle introduces no process at all, which is why the bundle is the mandatory part and the service is not.
 - **No plugin-to-plugin path.** The halves never connect; results travel as a payload over the existing
-  agent ingress. A compromised agent half can therefore send its provisioner half nothing but bytes that
+  agent ingress. A compromised agent half can therefore send the control plane nothing but bytes that
   the gateway already authenticated, rate-limited, and size-capped.
 - **Neither end trusts the other's validation.** Both the agent and the provisioner validate what they
   send and what they receive, so a compromised or simply buggy peer cannot place an unvalidated payload in
@@ -332,7 +386,8 @@ and is rebuilt on a pin change like any other bundle input.
 | Default | `production` | `staging` | `test` | `development` |
 |---------|--------------|-----------|--------|---------------|
 | Unverified plugin half | refused | refused | refused | refused |
-| `pairing: required` unmet | refused | refused | refused | refused |
+| `Plugin` with no provisioner bundle | refused | refused | refused | refused |
+| Declared kind with no schema in the bundle | refused | refused | refused | refused |
 | Plugin policy compile error | deny | deny | deny | deny |
 | Plugin `print` in Rego | off | off | off | on |
 | Local unsigned plugin half | refused | refused | allowed | allowed |
@@ -360,15 +415,19 @@ each host-to-plugin call, so a proposal is traceable back to the report that pro
 
 ### Build, release & versioning
 
-One release train per plugin, as 0014 already sets for the first-party set: both halves built from one
+One release train per plugin, as 0014 already sets for the first-party set: every artifact built from one
 commit, released under one tag, signed by one publisher identity, and recorded in one `plugins-index.json`.
-A release that ships only one half declares that in `pairing` rather than leaving it to be inferred from a
-missing asset.
+The provisioner bundle is a release asset like the binaries, signed the same way. A release without one is
+not a valid plugin release, which CI enforces in `rackmarshal-plugin-starter` (0015) so a third party finds
+out at build time rather than at import.
 
 ### Testing
 
-- **Pairing** — a bundle pinning an agent half whose `pairing: required` provisioner half is absent fails
-  admission; version-skewed halves cannot both be pinned from one `Plugin` document.
+- **Bundle completeness** — a `Plugin` with no provisioner bundle fails import; a declared `resource:`
+  capability with no matching schema fails `schema_missing`; a schema with no matching capability fails
+  `schema_unclaimed`; version-skewed artifacts cannot be pinned from one `Plugin` document.
+- **Admission without a service** — a plugin shipping only a bundle still has its kinds schema-validated
+  and its policy evaluated at admission, with no plugin process running anywhere.
 - **Scoping** — a plugin policy that denies a kind outside its grant has no effect; a table across the
   built-in kinds and a second plugin's kinds asserts it, and this is the test that must not be skipped.
 - **Denial only** — a plugin policy defining `allow` cannot widen platform or tenant denials.
@@ -390,7 +449,11 @@ missing asset.
   halves could then be pinned at different versions while each document stays individually valid, and the
   failure would appear at apply time as an unparseable result. One document makes the skew
   unrepresentable, which is worth the rename.
-- **A provisioner half in-process over go-plugin** — what 0011 rejected. It brings gRPC into the service
+- **Agent plugins with no provisioner bundle**, as they are today — no work for plugin authors, but the
+  provisioner would sign a bundle containing a spec it cannot validate and a kind it cannot police, so a
+  bad spec surfaces per endpoint after dispatch instead of once at admission. That is precisely the
+  fail-closed-at-write-time property 0011 is built on, and plugin kinds are where it matters most.
+- **A provisioner service in-process over go-plugin** — what 0011 rejected. It brings gRPC into the service
   and puts third-party code in the address space that holds the database credentials. A separate process
   keeps the isolation and costs a socket.
 - **REST + JSON between the provisioner and its plugins**, to avoid amending the convention — consistent
@@ -413,9 +476,11 @@ missing asset.
 
 ## Open questions
 
-- **Module budget** — the plugin host moves 0013's gRPC and go-plugin stack (14 linked modules) into
-  `rackmarshal-provisioner`, which already links OPA's 26. Is that acceptable, or should the host be a
-  build tag so a deployment with no provisioner-side plugins links neither?
+- **Module budget** — the plugin host would move 0013's gRPC and go-plugin stack (14 linked modules) into
+  `rackmarshal-provisioner`, which already links OPA's 26. With the bundle mandatory and the service
+  optional, a build tag now looks right rather than merely tempting: the default build would validate and
+  police every plugin kind while linking no gRPC at all. Confirm, and decide whether the tagged build is
+  the default in released artifacts.
 - **Where a plugin's schemas live** — this document assumes the plugin publishes them and the provisioner
   half validates against them, which answers 0011's "who publishes their schemas" and 0013's "how do their
   schemas reach the agent and 0011". Does 0020's "no standalone JSON Schema files" rule extend to
@@ -427,8 +492,8 @@ missing asset.
 - **Proposal loops** — a plugin whose `Propose` output triggers a report that triggers another proposal.
   A generation cap and a proposal-depth limit are the obvious controls; which, and what value?
 - **Result schema evolution** — when a plugin's result schema changes between versions, the provisioner
-  half may read a result its agent half wrote before the upgrade. Does `pairing` need a compatibility
-  range rather than a single version?
+  service may read a result an agent half wrote before the upgrade. Does the `Plugin` document need a
+  compatibility range rather than a single version?
 - **Per-tenant plugin enablement** — may a tenant refuse a plugin an operator installed, and does that
   belong in `Policy` or in a tenant setting?
 
@@ -456,5 +521,5 @@ missing asset.
 - [hashicorp/go-plugin](https://github.com/hashicorp/go-plugin) — the plugin transport and `SecureConfig`.
 - [OPA `v1/rego`](https://pkg.go.dev/github.com/open-policy-agent/opa/v1/rego) — capabilities, strict
   builtin errors, and evaluation deadlines.
-- [sigstore-go `pkg/verify`](https://github.com/sigstore/sigstore-go) — the verification chain both halves
-  share.
+- [sigstore-go `pkg/verify`](https://github.com/sigstore/sigstore-go) — the verification chain every
+  plugin artifact shares.
