@@ -10,8 +10,8 @@
 - **Summary:** `rackmarshal-gateway` is Rackmarshal's only edge. An operator ingress accepts bearer tokens over the
   starter's TLS 1.2+ configuration, and a separate agent ingress requires mutual TLS 1.3 with per-agent
   certificates. It routes only operations the contract exposes to that ingress, verifies tokens and
-  revocation and fails closed, and forwards requests to services over mutual TLS. It is built on Echo
-  with the standard library's `httputil.ReverseProxy`.
+  revocation and fails closed, and forwards requests to services over mutual TLS. It is built on Echo,
+  and forwards through a hardened `Rewrite`-based proxy middleware contributed back to `go-echo-starter`.
 
 > An initial draft with concrete proposals, bounded by the
 > [Resolved decisions](0001-project-repositories.md#resolved-decisions) in 0001. Conventions other
@@ -107,26 +107,63 @@ endpoint is routed to it. This keeps every credential exchange on the environmen
 
 #### Reverse proxy
 
-Proposed: **Echo v5 for listeners, middleware, and routing, and `net/http/httputil.ReverseProxy` with
-`Rewrite` for forwarding.** No new module is needed. Echo's own `middleware.Proxy` is not used, because it
-builds on `httputil.NewSingleHostReverseProxy` (`proxy.go` line 423 in v5.3.1), which uses `Director`. Go
-documents `Director` as insecure: a client can list headers in `Connection` to strip headers the director
-added, and inbound `X-Forwarded-*` headers survive. One `ReverseProxy` per upstream:
+Proposed: **a hardened, `Rewrite`-only proxy middleware for Echo v5**, contributed to `go-echo-starter`
+as `internal/middleware/proxy`, with one instance bound per upstream. Echo keeps listeners, middleware,
+and routing; only the forwarding step is replaced.
+
+Echo's own `middleware.Proxy` is not reused as-is. It builds on `httputil.NewSingleHostReverseProxy`
+(`middleware/proxy.go` line 423 in v5.3.1), and that constructor returns a proxy driven by the deprecated
+`Director` hook. This is not a defect in Echo — it is a standard-library API that Go itself deprecated and
+labels insecure, and Echo flags the consequence in its own comment at `middleware/proxy.go` lines 349-351.
+But `Director` carries two properties a gateway that adds trusted headers cannot accept:
+
+- **Ordering.** `Director` runs at `reverseproxy.go:457` and `removeHopByHopHeaders` at `:469` — *after*
+  it. A client sending `Connection: X-Rackmarshal-Principal` therefore strips a header the director added.
+  `Rewrite` runs at `:503`, after the same stripping, so headers it sets survive.
+- **Forwarding headers.** Inbound `Forwarded` and `X-Forwarded-*` are deleted only on the `Rewrite` path
+  (`:486-493`); the `Director` path appends to whatever the client sent. Echo's middleware does not
+  compensate — it keeps an inbound `X-Real-IP` unless an `IPExtractor` is set, and only appends to
+  `X-Forwarded-For` (`middleware/proxy.go:352-364`).
+
+The starter middleware exposes no `Director` field, so the unsafe path is unreachable by configuration. It
+always builds `httputil.ReverseProxy` with `Rewrite`, strips inbound forwarding headers, and re-derives the
+client address from Echo's configured `IPExtractor`:
 
 ```go
-proxy := &httputil.ReverseProxy{
-    Rewrite: func(r *httputil.ProxyRequest) {
-        r.SetURL(upstream)                     // https://rackmarshal-inventory.<internal>:8443
-        r.Out.Host = upstream.Host
-        stripRackmarshalHeaders(r.Out.Header)        // X-Rackmarshal-* from clients, Authorization, Cookie
-        r.Out.Header.Set("X-Rackmarshal-Principal", principal.Encode(r.In.Context()))
-        r.Out.Header.Set("X-Request-Id", requestID(r.In.Context()))
-        r.SetXForwarded()                      // client IP from the gateway's own extractor only
-    },
-    Transport:      telemetry.WrapTransport(upstreamTransport), // rackmarshal-sdk tlsconfig + rackmarshal-common spans
-    ErrorHandler:   problemUpstreamError,      // 502 upstream_unavailable, 504 upstream_timeout
-    ModifyResponse: scrubResponseHeaders,      // drop Server; enforce Cache-Control: no-store
+// internal/middleware/proxy -- go-echo-starter
+type Config struct {
+    Skipper        middleware.Skipper
+    Target         *url.URL                        // upstream origin; required
+    Transport      http.RoundTripper               // required; no implicit default pool
+    StripRequest   []string                        // inbound headers dropped before Rewrite
+    StripPrefixes  []string                        // e.g. "X-Rackmarshal-"
+    SetHeaders     func(*echo.Context) http.Header // applied inside Rewrite, so hop-by-hop safe
+    ModifyResponse func(*http.Response) error
+    ErrorHandler   func(*echo.Context, error) error
 }
+
+func With(cfg Config) echo.MiddlewareFunc
+```
+
+Inside `Rewrite` it calls `r.SetURL(cfg.Target)`, sets `r.Out.Host`, applies `StripRequest` and
+`StripPrefixes`, calls `r.SetXForwarded()` so the client address comes from the gateway's extractor rather
+than the inbound header, and only then applies `SetHeaders`. The gateway binds one per upstream:
+
+```go
+proxy.With(proxy.Config{
+    Target:        inventoryURL,                    // https://rackmarshal-inventory.<internal>:8443
+    Transport:     telemetry.WrapTransport(upstreamTransport), // sdk tlsconfig + common spans
+    StripRequest:  []string{"Authorization", "Cookie"},
+    StripPrefixes: []string{"X-Rackmarshal-"},
+    SetHeaders: func(c *echo.Context) http.Header {
+        return http.Header{
+            "X-Rackmarshal-Principal": {principal.Encode(c.Request().Context())},
+            "X-Request-Id":            {requestID(c.Request().Context())},
+        }
+    },
+    ModifyResponse: scrubResponseHeaders,           // drop Server; enforce Cache-Control: no-store
+    ErrorHandler:   problemUpstreamError,           // 502 upstream_unavailable, 504 upstream_timeout
+})
 ```
 
 `upstreamTransport` uses `tlsconfig.Client` from `rackmarshal-sdk` with TLS 1.3, the environment roots, and
@@ -167,6 +204,10 @@ only to logs.
   v4.1.5, for JWKS parsing and JWS verification. Its `go.mod` has no requirements, measured on 2026-09-15.
 - **Kept from the starter** — Echo v5.3.1, which links only `golang.org/x/time` (rate limiter),
   `golang.org/x/net` (`netutil.LimitListener`), zerolog, `errorx`, and `yaml.v3`.
+- **New starter package** — `internal/middleware/proxy` in `go-echo-starter`, arriving here by seeding
+  like the rest of the starter. It adds no module: it needs only Echo and the standard library, both
+  already linked. The starter stays a template with nothing exported, rather than becoming an importable
+  module with the compatibility obligation that implies.
 - **Removed from the starter** — `internal/database` (pgx, bun, goose), swaggo and `cmd/openapi-gen`
   (replaced by embedded contracts, per 0002), ACME `autocert`, and `Masterminds/semver`.
 - **Measured footprint** — the starter's `cmd/daemon` links 49 third-party modules (151 in
@@ -303,7 +344,9 @@ omitted here.
 ### Build, release & versioning
 
 - **Bootstrap** from `go-echo-starter`, removing the database, swaggo, ACME, and HTTP-redirect code. The
-  binary is `cmd/rackmarshal-gateway`.
+  binary is `cmd/rackmarshal-gateway`, and `internal/middleware/proxy` is copied forward with everything
+  else. Seeding does not propagate later fixes, so a hardening change to the starter's middleware has to be
+  ported deliberately; the gateway's own smuggling tests (below) are what catch a stale copy.
 - **Contract coupling** — a new `operator` or `agent` operation is reachable only after the gateway
   upgrades `rackmarshal-api-schema`. A 100-series workflow opens that pull request on each schema release, like
   `rackmarshal-sdk`'s regeneration workflow.
@@ -325,14 +368,25 @@ omitted here.
 - **Tokens** — tables of wrong `alg`, `typ`, `iss`, and `aud`, other-environment keys, expired tokens, and
   unknown `kid` refresh throttling.
 - **Smuggling and hygiene** — `Connection: X-Rackmarshal-Principal`, spoofed `X-Forwarded-For`, encoded
-  slashes, and duplicate `Authorization` headers.
+  slashes, and duplicate `Authorization` headers. The first two are also table tests in the starter's
+  `internal/middleware/proxy`, asserting the added header survives the `Connection` list and that the
+  client's forwarding values are discarded rather than appended. Both suites are kept, because the seeded
+  copy is what actually runs here.
 - **Fuzzing** of the path normalizer and principal encoder; `-race`; benchmarks of the per-request
   revocation re-check.
 
 ## Alternatives considered
 
-- **Echo `middleware.Proxy`** — it uses `NewSingleHostReverseProxy` and `Director`, which Go documents as
-  insecure. It also adds load-balancer features the gateway does not need.
+- **Echo `middleware.Proxy` as-is** — not a defect in Echo, but it builds on `NewSingleHostReverseProxy`,
+  whose `Director` hook Go itself deprecates and documents as insecure, and it offers no way to substitute
+  `Rewrite`. It also adds balancer and retry features the gateway does not need. Hence the starter package
+  above rather than a fork of the middleware.
+- **A gateway-local `httputil.ReverseProxy` per upstream** — the same hardening with no starter change,
+  but it leaves every other seeded service on the unsafe default and gives the fix nowhere to live.
+- **Publishing the middleware as `pkg/middleware/proxy`** — the starter exports nothing today, so this
+  would make it an importable module for the first time and let a hardening fix reach services through a
+  version bump. Rejected for now: it takes on a compatibility obligation for the one package, and the
+  starter is a template that services are seeded from, not a dependency they track.
 - **Plain `net/http` without Echo** — removes one module, but gives up the starter's middleware, config,
   and rate limiter, and diverges from every other service.
 - **Envoy or another off-the-shelf proxy** — mature, but not Go, and it cannot build route tables from
@@ -375,10 +429,14 @@ omitted here.
 - [go-echo-starter](https://github.com/servercurio/go-echo-starter) — `internal/application/application_tls.go`
   (`hardenedTLSConfig`, `LimitListener`), `application_proxy.go` (implicit private-range trust),
   `config_ratelimit.go`, `config_security.go`.
-- [Echo v5 middleware](https://github.com/labstack/echo/tree/v5.3.1/middleware) — `proxy.go`,
+- [Echo v5 middleware](https://github.com/labstack/echo/tree/v5.3.1/middleware) — `proxy.go`
+  (`NewSingleHostReverseProxy` at line 423; the `X-Real-IP` / `X-Forwarded-For` note at lines 349-364),
   `rate_limiter.go`, `request_id.go` (inspected at v5.3.1).
-- [`httputil.ReverseProxy`](https://pkg.go.dev/net/http/httputil#ReverseProxy) — `Rewrite` and the
-  `Director` security notes; [`ProxyRequest.SetXForwarded`](https://pkg.go.dev/net/http/httputil#ProxyRequest.SetXForwarded).
+- [`httputil.ReverseProxy`](https://pkg.go.dev/net/http/httputil#ReverseProxy) — the `Director` field's
+  "This function is insecure" note, and the call ordering that motivates `Rewrite`: `Director` at
+  `reverseproxy.go:457`, `removeHopByHopHeaders` at `:469`, forwarding-header deletion at `:486-493`, and
+  `Rewrite` at `:503` (read at Go 1.27.1);
+  [`ProxyRequest.SetXForwarded`](https://pkg.go.dev/net/http/httputil#ProxyRequest.SetXForwarded).
 - [`tls.Config`](https://pkg.go.dev/crypto/tls#Config) — `VerifyConnection` runs on resumptions;
   `VerifyPeerCertificate` does not.
 - [go-jose v4](https://github.com/go-jose/go-jose) and [golang-jwt v5](https://github.com/golang-jwt/jwt).
