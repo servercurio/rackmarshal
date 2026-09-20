@@ -2,12 +2,12 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0013 — rackmarshal-agent-plugin-sdk
+# 0013 — agent-plugin-sdk
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
-- **Summary:** `rackmarshal-agent-plugin-sdk` defines the versioned gRPC contract between `rackmarshal-agent` and
+- **Summary:** `agent-plugin-sdk` defines the versioned gRPC contract between `agent` and
   its plugins over `hashicorp/go-plugin`. The agent gets launch helpers that pin each binary's SHA-256,
   use automatic mutual TLS, and start plugins with a clean environment. Plugins get a `serve` package
   that enforces the environment check and capability grants, plus a test harness. The contract includes
@@ -20,8 +20,8 @@
 
 ## Context & goals
 
-In 0001, plugins are separate processes that `rackmarshal-agent` launches over gRPC with
-`hashicorp/go-plugin`. `rackmarshal-provisioner` verifies plugin release signatures at import, the core
+In 0001, plugins are separate processes that `agent` launches over gRPC with
+`hashicorp/go-plugin`. `provisioner` verifies plugin release signatures at import, the core
 `sigstore` validator plugin verifies them again on the host before install, and before every launch the
 agent pins the binary's SHA-256, taken from its signed directive bundle or a core plugin's signed
 statement, through `SecureConfig`. The agent passes its environment ID, and a plugin refuses an agent
@@ -44,11 +44,11 @@ Rackmarshal's gRPC contract.
 **Non-goals**
 
 - Signature and core-signature verification policy, installation, OS sandboxing, and restarts —
-  [0012](0012-rackmarshal-agent.md); the validator implementation — [0014](0014-rackmarshal-agent-plugins.md).
-- Desired-state kind schemas — [0002](0002-rackmarshal-api-schema.md).
-- First-party plugins ([0014](0014-rackmarshal-agent-plugins.md)) and the author template
-  ([0015](0015-rackmarshal-plugin-starter.md)).
-- Agentless device drivers, which `rackmarshal-provisioner` enforces remotely
+  [0012](0012-agent.md); the validator implementation — [0014](0014-agent-plugins.md).
+- Desired-state kind schemas — [0002](0002-api-schema.md).
+- First-party plugins ([0014](0014-agent-plugins.md)) and the author template
+  ([0015](0015-plugin-starter.md)).
+- Agentless device drivers, which `provisioner` enforces remotely
   ([Desired-state model](0001-project-repositories.md#desired-state-model--one-authority-two-enforcement-paths)).
 
 ## Proposal
@@ -67,7 +67,7 @@ Rackmarshal's gRPC contract.
 #### Package layout
 
 ```
-rackmarshal-agent-plugin-sdk/
+agent-plugin-sdk/
 ├── proto/rackmarshal/agent/plugin/v1alpha1/   # plugin.proto, facts.proto, resource.proto, verifier.proto
 ├── buf.yaml, buf.gen.yaml
 ├── pkg/
@@ -90,7 +90,7 @@ Proposed: one protobuf package per protocol version, with services split by capa
 ```proto
 syntax = "proto3";
 package rackmarshal.agent.plugin.v1alpha1;
-option go_package = "github.com/servercurio/rackmarshal-agent-plugin-sdk/pkg/plugin/v1alpha1;pluginv1alpha1";
+option go_package = "github.com/rackmarshal/agent-plugin-sdk/pkg/plugin/v1alpha1;pluginv1alpha1";
 
 service PluginService {
   rpc GetManifest(GetManifestRequest) returns (GetManifestResponse); // allowed before Init
@@ -134,7 +134,7 @@ with `result_invalid`; it never fails the report.
 #### Provisioner-side services
 
 A plugin may ship an optional provisioner service alongside its required bundle (0021). It speaks the
-same protobuf package, versioned with it, and `rackmarshal-provisioner` launches it as a separate process
+same protobuf package, versioned with it, and `provisioner` launches it as a separate process
 over a local socket:
 
 ```proto
@@ -154,13 +154,13 @@ message InterpretResultResponse {
 ```
 
 The two halves of a plugin never connect to each other. A result reaches `InterpretResult` only as a
-payload the agent posted through `rackmarshal-gateway` and the provisioner validated on receipt, so a
+payload the agent posted through `gateway` and the provisioner validated on receipt, so a
 plugin gains no route it did not have and opens no listener.
 
 #### Verifier service
 
 Proposed in `verifier.proto`, served only by the core `sigstore` plugin
-([0014](0014-rackmarshal-agent-plugins.md)) under the `verifier:sigstore` capability:
+([0014](0014-agent-plugins.md)) under the `verifier:sigstore` capability:
 
 ```proto
 service VerifierService {
@@ -217,7 +217,7 @@ message VerifyArtifactResponse {
 #### Capability model
 
 Each plugin embeds a `manifest.yaml`. `GetManifest` returns it, and each release publishes it
-([0014](0014-rackmarshal-agent-plugins.md)):
+([0014](0014-agent-plugins.md)):
 
 ```yaml
 name: packages                  # lowercase DNS label; binary rackmarshal-plugin-packages
@@ -370,13 +370,13 @@ not be writable by group or others.
 `tracecontext.Carrier` implements `Get`, `Set`, and `Keys` over gRPC metadata for `traceparent` and
 `tracestate` only (no baggage). The interceptors take inject and extract functions, such as closures
 over `otel.GetTextMapPropagator()`, so the SDK never imports OpenTelemetry. The agent records a client
-span per plugin RPC. The plugin extracts the remote context, so `rackmarshal-common`'s `TraceHook` stamps
+span per plugin RPC. The plugin extracts the remote context, so `common`'s `TraceHook` stamps
 `trace_id` on its logs without the plugin exporting spans.
 
 ### Dependencies
 
 - **Root module** — `hashicorp/go-plugin` v1.8.0 (latest), `google.golang.org/grpc` v1.83.2,
-  `google.golang.org/protobuf` v1.36.12, and `rackmarshal-common` (`environment` only).
+  `google.golang.org/protobuf` v1.36.12, and `common` (`environment` only).
 - **Measured 2026-09-15** — throwaway gRPC plugin and host programs (`Serve`, `NewClient` with
   `SecureConfig`, `AutoMTLS`, `SkipHostEnv`) each link the same **14 modules** on linux and windows:
   `go-plugin`, `go-hclog`, `yamux`, `oklog/run`, `fatih/color`, `mattn/go-colorable`,
@@ -388,9 +388,9 @@ span per plugin RPC. The plugin extracts the remote context, so `rackmarshal-com
   current versions, so minimal version selection gives every plugin current security fixes.
 - **Not in the SDK** — `sigstore-go` v1.3.0: its verifier links 71 modules, including gRPC,
   OpenTelemetry, and `go-openapi`, and `go list -m all` reports 367
-  ([0012](0012-rackmarshal-agent.md#sigstore-verifier-measurements)). The SDK defines `VerifierService` but
-  links no verifier; verification runs in `rackmarshal-provisioner` ([0011](0011-rackmarshal-provisioner.md)) and in
-  the core `sigstore` plugin (79 linked modules, [0014](0014-rackmarshal-agent-plugins.md)), not in the agent
+  ([0012](0012-agent.md#sigstore-verifier-measurements)). The SDK defines `VerifierService` but
+  links no verifier; verification runs in `provisioner` ([0011](0011-provisioner.md)) and in
+  the core `sigstore` plugin (79 linked modules, [0014](0014-agent-plugins.md)), not in the agent
   binary. `google.protobuf.Timestamp` comes from `protobuf`, already linked.
 - **Tools** (not in `go.mod`) — buf v1.73.0, `protoc-gen-go` v1.36.12, and `protoc-gen-go-grpc` v1.6.2.
   All three were verified to run through `go run <module>@<version>`. `task tools` installs them into
@@ -417,7 +417,7 @@ None; only in-memory grant and environment state per plugin process.
   sidecar re-checked against the bundle pin at launch) and the writable-path refusal close that window
   in practice.
 - **Clean environment** — plugins never receive the agent's variables, certificate, key, or token, and
-  have no path to `rackmarshal-gateway`.
+  have no path to `gateway`.
 - **Untrusted replies** — the agent validates and size-caps facts and verifier replies, and never shows
   plugin error details to operators verbatim.
 - **Least privilege** — manifests default to no root, exec, writes, or network. Network grants are host
@@ -427,14 +427,14 @@ None; only in-memory grant and environment state per plugin process.
 ### Environment awareness
 
 Plugins require name, tier, and ID at startup and refuse agents from another environment (0001). Tier
-behavior goes through `rackmarshal-common`'s `Hardened()` and `AllowLastResort`. `host.Launch` has no insecure
+behavior goes through `common`'s `Hardened()` and `AllowLastResort`. `host.Launch` has no insecure
 mode, and only `plugintest` uses `development` fixtures.
 
 ### Logging & telemetry
 
 - **Stderr, not stdout** — go-plugin uses stdout for its handshake line, and `plugin.Serve` then
   redirects `os.Stdout` and `os.Stderr` to `SyncStdout` and `SyncStderr` streams (`server.go`). `serve`
-  gives the original stderr to `rackmarshal-common`'s logger. go-plugin reads it line by line into
+  gives the original stderr to `common`'s logger. go-plugin reads it line by line into
   `host.Config.Stderr`, splitting lines longer than its 64 KiB buffer.
 - **Re-emitted by the agent** — the agent parses each JSON line, adds `rackmarshal.plugin.name` and
   `rackmarshal.plugin.version`, rate-limits, and writes to its stdout. Non-JSON lines, such as panics, become
@@ -456,7 +456,7 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
 ### Build, release & versioning
 
 - **Bootstrap** from `go-library-starter`, removing its runtime packages as
-  [0002](0002-rackmarshal-api-schema.md) does.
+  [0002](0002-api-schema.md) does.
 - **Tasks** — `tools`, `generate`, `check:drift`, `test`, `deps:check`, `proto:lint` (`buf lint`,
   `STANDARD`), and `proto:breaking` (`buf breaking` against the last tag with `FILE`, buf's default and
   strictest category, on every package).
@@ -510,7 +510,7 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
 - **Plugin spans** — no export (proposed), forwarding through the agent, or direct export with a network
   grant?
 - **Third-party kinds** — which groups can they use? How their schemas reach the agent and
-  [0011](0011-rackmarshal-provisioner.md) is settled: the required provisioner bundle carries them
+  [0011](0011-provisioner.md) is settled: the required provisioner bundle carries them
   ([0021](0021-plugin-extensibility.md)). The group-naming half is still open.
 - **Long operations** — unary `ApplyResource` with a deadline (proposed), or streamed progress?
 - **Scope** — `GRPCBroker` host callbacks (secrets, content), and host-attached device drivers?
@@ -522,8 +522,8 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
 ## References
 
 - [0001](0001-project-repositories.md), [CONVENTIONS.md](CONVENTIONS.md),
-  [0002](0002-rackmarshal-api-schema.md), [0003](0003-rackmarshal-sdk.md), [0004](0004-rackmarshal-common.md),
-  [0012](0012-rackmarshal-agent.md), [0014](0014-rackmarshal-agent-plugins.md).
+  [0002](0002-api-schema.md), [0003](0003-sdk.md), [0004](0004-common.md),
+  [0012](0012-agent.md), [0014](0014-agent-plugins.md).
 - [0021 — Plugin extensibility](0021-plugin-extensibility.md) — the provisioner bundle, the optional
   provisioner service, the result round trip, and plugin-supplied policy.
 - [`hashicorp/go-plugin` v1.8.0](https://github.com/hashicorp/go-plugin/tree/v1.8.0) (MPL-2.0):

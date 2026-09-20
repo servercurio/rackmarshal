@@ -2,15 +2,15 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0015 — rackmarshal-plugin-starter
+# 0015 — plugin-starter
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
-- **Summary:** `rackmarshal-plugin-starter` is a Rackmarshal-owned GitHub template, derived from `go-cli-starter`,
-  with a working example plugin wired to `rackmarshal-agent-plugin-sdk`. It includes a rename tool, a local
+- **Summary:** `plugin-starter` is a Rackmarshal-owned GitHub template, derived from `go-cli-starter`,
+  with a working example plugin wired to `agent-plugin-sdk`. It includes a rename tool, a local
   fake agent, and CI that produces the same signed, SBOM-backed release assets as the first-party
-  plugins, so third parties can meet `rackmarshal-provisioner`'s import verification and the agents' on-host
+  plugins, so third parties can meet `provisioner`'s import verification and the agents' on-host
   validator without Rackmarshal's help. Third-party plugins are never core-signed.
 
 > An initial draft with concrete proposals, bounded by the
@@ -19,10 +19,10 @@
 
 ## Context & goals
 
-0001 defines `rackmarshal-plugin-starter` as "the project-owned scaffold third parties clone to author their
+0001 defines `plugin-starter` as "the project-owned scaffold third parties clone to author their
 own" plugins. Unlike the general-purpose `go-*-starter` baselines, it is Rackmarshal-specific and depends on
-`rackmarshal-agent-plugin-sdk`
-([Agent plugin ecosystem](0001-project-repositories.md#agent-plugin-ecosystem)). `rackmarshal-provisioner`
+`agent-plugin-sdk`
+([Agent plugin ecosystem](0001-project-repositories.md#agent-plugin-ecosystem)). `provisioner`
 imports only plugin releases whose cosign signature matches a trusted publisher, agents run only the
 digests it pins, and the core `sigstore` validator on each host verifies the signature again before
 install, so a correct release pipeline must be the default.
@@ -31,15 +31,15 @@ install, so a correct release pipeline must be the default.
 
 - Clone, rename, pass `task test`, and cut a verifiable release, with no Rackmarshal involvement.
 - The least-privilege plugin as the default: unprivileged, with no network and no exec.
-- The same assets, manifest, and publisher signing model as [0014](0014-rackmarshal-agent-plugins.md).
+- The same assets, manifest, and publisher signing model as [0014](0014-agent-plugins.md).
 - A repeatable way to pick up `go-cli-starter` and SDK changes, and clear licensing guidance.
 
 **Non-goals**
 
 - A registry, a marketplace, or Rackmarshal certification of third-party plugins.
 - Core signing: third-party plugins are never core-signed and never core plugins (0014).
-- The contract ([0013](0013-rackmarshal-agent-plugin-sdk.md)) and agent verification
-  ([0012](0012-rackmarshal-agent.md)).
+- The contract ([0013](0013-agent-plugin-sdk.md)) and agent verification
+  ([0012](0012-agent.md)).
 - Legal advice; the licensing section is guidance only.
 
 ## Proposal
@@ -55,7 +55,7 @@ install, so a correct release pipeline must be the default.
 #### Repository layout
 
 ```
-rackmarshal-plugin-starter/
+plugin-starter/
 ├── cmd/rackmarshal-plugin-example/main.go     # serve.Main wiring only
 ├── internal/
 │   ├── example/                         # facts.go (example.greeting), marker.go (Marker kind)
@@ -81,7 +81,7 @@ Removed from `go-cli-starter`:
 - the `copy` command and `internal/obfusicate`;
 - `internal/health`, replaced by the `Check` RPC;
 - the Dockerfile and container tasks;
-- `internal/logging`, replaced by `rackmarshal-common` (0001 bootstrap step 4).
+- `internal/logging`, replaced by `common` (0001 bootstrap step 4).
 
 #### Example plugin
 
@@ -161,7 +161,7 @@ The workflows keep the starter's SHA-pinned actions, `harden-runner`, and a defa
 
 ### Dependencies
 
-- **Rackmarshal** — `rackmarshal-agent-plugin-sdk` (14 linked modules, measured in 0013) and `rackmarshal-common`
+- **Rackmarshal** — `agent-plugin-sdk` (14 linked modules, measured in 0013) and `common`
   (`logging`, `environment`).
 - **Kept from `go-cli-starter`'s `go.mod`**:
   - `spf13/cobra` v1.10.2 and `spf13/pflag` v1.0.10 (`mousetrap` v1.1.0 on Windows);
@@ -197,10 +197,10 @@ spec:
 ```
 
 - **Two verifications** — every release asset ships an `<asset>.sigstore.json` bundle.
-  `rackmarshal-provisioner` verifies it at import ([0011](0011-rackmarshal-provisioner.md)), and the core `sigstore`
+  `provisioner` verifies it at import ([0011](0011-provisioner.md)), and the core `sigstore`
   validator on each host verifies it again, offline, against the same `PluginPublisher` identity: the
   certificate identity, a transparency-log entry, and, for keyless certificates, an SCT, using a
-  TUF-verified trusted root ([0012](0012-rackmarshal-agent.md)). A bundle without a transparency-log entry
+  TUF-verified trusted root ([0012](0012-agent.md)). A bundle without a transparency-log entry
   fails on hosts.
 - **Key-based option** — when `COSIGN_KEY` is set, for example to a KMS URI, `task sign` runs
   `cosign sign-blob --key` with `--bundle`, and publishers distribute `spec.key.publicKeyPEM`. It suits
@@ -218,12 +218,12 @@ spec:
 ### Environment awareness
 
 The example refuses to start without `environment` configuration and refuses an agent from another
-environment (0013). The docs require plugins to branch on tier through `rackmarshal-common`, never on the
+environment (0013). The docs require plugins to branch on tier through `common`, never on the
 environment name. Tests cover both refusals.
 
 ### Logging & telemetry
 
-`rackmarshal-common` logging to stderr with `service.name` `rackmarshal-plugin-<name>`, as in 0013. No telemetry
+`common` logging to stderr with `service.name` `rackmarshal-plugin-<name>`, as in 0013. No telemetry
 export. The docs list the fields the agent adds.
 
 ### Configuration
@@ -268,7 +268,7 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
   - `diverged` changes become an issue for manual review;
   - `removed` paths are ignored.
 - **Downstream plugins** — repositories created from a GitHub template start without its history (not
-  re-verified). They use the same mechanism pointed at `servercurio/rackmarshal-plugin-starter` release tags.
+  re-verified). They use the same mechanism pointed at `servercurio/plugin-starter` release tags.
   `docs/upgrading.md` covers Dependabot SDK bumps and protocol changes.
 
 #### Licensing guidance for third parties
@@ -301,7 +301,7 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
 - **[Copier](https://copier.readthedocs.io)** — `copier update` tracks template changes well, but brings
   a Python toolchain.
 - **Git merges from the starter remote** — no tooling, but renamed paths conflict on every merge.
-- **`rackmarshal plugin new` in `rackmarshal-cli`** — couples the operator CLI to author tooling.
+- **`rackmarshal plugin new` in `cli`** — couples the operator CLI to author tooling.
 - **Standard-library `flag` instead of cobra** — fewer modules, but diverges from `go-cli-starter` and
   makes syncs harder.
 - **Keyless-only signing** — excludes publishers that don't build on GitHub Actions or that need to keep
@@ -319,17 +319,17 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
 
 - **Starter license** — keep Apache-2.0 (proposed), or offer the template under 0BSD, which would
   change 0001's shared meta for this repository?
-- **Third-party kinds** — how are groups named, and how do schemas reach `rackmarshal-provisioner` and the
-  agent (0013, [0002](0002-rackmarshal-api-schema.md))?
+- **Third-party kinds** — how are groups named, and how do schemas reach `provisioner` and the
+  agent (0013, [0002](0002-api-schema.md))?
 - **Publisher onboarding** — documentation only, or a Rackmarshal-maintained list of known identities?
 - **Platforms** — should darwin and windows become defaults once the agent supports them (0012)?
 - **Sync signing** — which token and GPG key sign the sync commits in downstream repositories?
 
 ## References
 
-- [0001](0001-project-repositories.md), [CONVENTIONS.md](CONVENTIONS.md), [0004](0004-rackmarshal-common.md),
-  [0011](0011-rackmarshal-provisioner.md), [0012](0012-rackmarshal-agent.md),
-  [0013](0013-rackmarshal-agent-plugin-sdk.md), [0014](0014-rackmarshal-agent-plugins.md).
+- [0001](0001-project-repositories.md), [CONVENTIONS.md](CONVENTIONS.md), [0004](0004-common.md),
+  [0011](0011-provisioner.md), [0012](0012-agent.md),
+  [0013](0013-agent-plugin-sdk.md), [0014](0014-agent-plugins.md).
 - [go-cli-starter](https://github.com/servercurio/go-cli-starter) — `go.mod`, `Taskfile.yaml`,
   `.releaserc.json`, workflows, and `naming-standards.md`; no tags or releases as of 2026-09-15.
 - Cosign — [signing blobs](https://docs.sigstore.dev/cosign/signing/signing_with_blobs/) (keyless and

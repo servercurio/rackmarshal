@@ -2,12 +2,12 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0011 — rackmarshal-provisioner
+# 0011 — provisioner
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
-- **Summary:** `rackmarshal-provisioner` is Rackmarshal's single desired-state authority. It stores versioned YAML
+- **Summary:** `provisioner` is Rackmarshal's single desired-state authority. It stores versioned YAML
   documents, validates them with JSON Schema and embedded OPA, renders them with sandboxed Tengo, and
   reconciles every endpoint from a PostgreSQL work queue. Agents pull signed per-endpoint bundles, and
   agentless devices are enforced by in-process drivers.
@@ -18,12 +18,12 @@
 
 ## Context & goals
 
-0001 makes `rackmarshal-provisioner` the **single** desired-state authority with two enforcement paths
+0001 makes `provisioner` the **single** desired-state authority with two enforcement paths
 ([Desired-state model](0001-project-repositories.md#desired-state-model--one-authority-two-enforcement-paths)).
 It fixes the format as custom YAML with `apiVersion` and `kind`, OPA embedded as a Go library and checked
 at write time and before dispatch, and Tengo with allowlisted pure modules, an allocation cap, and a
 timeout ([Desired-state format](0001-project-repositories.md#desired-state-format)). Agents reach it only
-through `rackmarshal-gateway`'s mutual-TLS agent ingress. Both paths converge against `rackmarshal-inventory`.
+through `gateway`'s mutual-TLS agent ingress. Both paths converge against `inventory`.
 
 **Goals**
 
@@ -35,18 +35,18 @@ through `rackmarshal-gateway`'s mutual-TLS agent ingress. Both paths converge ag
 
 **Non-goals**
 
-- On-host enforcement, plugins, and host inventory collection — [0012](0012-rackmarshal-agent.md).
-- The endpoint catalog and reported inventory — [0009](0009-rackmarshal-inventory.md).
-- Token formats, roles, and tenancy records — [0006](0006-rackmarshal-identity.md); routing and principal
-  propagation — [0008](0008-rackmarshal-gateway.md).
-- Deploying Rackmarshal itself — [0005](0005-rackmarshal-infrastructure.md).
+- On-host enforcement, plugins, and host inventory collection — [0012](0012-agent.md).
+- The endpoint catalog and reported inventory — [0009](0009-inventory.md).
+- Token formats, roles, and tenancy records — [0006](0006-identity.md); routing and principal
+  propagation — [0008](0008-gateway.md).
+- Deploying Rackmarshal itself — [0005](0005-infrastructure.md).
 
 ## Proposal
 
 ### Responsibilities
 
 - **Document store** — CRUD, validation, revisions, and audit for desired-state documents.
-- **Targeting** — resolve label selectors against `rackmarshal-inventory` into per-endpoint desired state.
+- **Targeting** — resolve label selectors against `inventory` into per-endpoint desired state.
 - **Rendering and policy** — Tengo `render` scripts, JSON Schema validation, OPA `admission` and
   `dispatch` policies.
 - **Dispatch** — signed directive bundles for agent endpoints; plan, apply, and verify for agentless ones.
@@ -57,7 +57,7 @@ through `rackmarshal-gateway`'s mutual-TLS agent ingress. Both paths converge ag
 #### Document model
 
 Kinds in `rackmarshal.servercurio.com/v1alpha1`. [0020](0020-desired-state-kinds.md) specifies every field,
-and the Go types carrying them live in [0002](0002-rackmarshal-api-schema.md), which generates the OpenAPI
+and the Go types carrying them live in [0002](0002-api-schema.md), which generates the OpenAPI
 components and reference material from those types rather than from hand-written schema files:
 
 | Kind               | Purpose                                                                         |
@@ -94,7 +94,7 @@ spec:
   1 MiB, and unknown top-level fields; convert to JSON; validate with `santhosh-tekuri/jsonschema/v6`.
 - **Conflicts** — two sets that target one endpoint with the same `kind` and `metadata.name` are a
   conflict reported at plan time, never resolved by last writer wins.
-- **Enforcement path** — each endpoint's path (`agent` or `agentless`) comes from `rackmarshal-inventory`.
+- **Enforcement path** — each endpoint's path (`agent` or `agentless`) comes from `inventory`.
   Admission rejects host kinds targeted at agentless endpoints and device kinds at agent endpoints.
 - **Conversion** — the provisioner stores documents as written and converts between `apiVersion`s in
   Go when a newer version exists (0002 assigns conversion here).
@@ -127,13 +127,13 @@ agent cannot request another's bundle. The agent sends `If-None-Match: "<digest>
 The bundle is a [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/envelope.md) envelope
 (payload type `application/vnd.rackmarshal.directive-bundle.v1alpha1+json`) plus the signer's certificate
 chain. It is signed with the provisioner's own service key, whose certificate carries
-`spiffe://<environment-id>/service/rackmarshal-provisioner`. The payload holds `environmentId`, `tenantId`,
+`spiffe://<environment-id>/service/provisioner`. The payload holds `environmentId`, `tenantId`,
 `endpointId`, `agentId`, a per-endpoint monotonic `generation`, `issuedAt`, `notAfter` (default 7
 days), `mode`, rendered resources, `host`-phase policies and scripts, and plugin pins (name, version,
 SHA-256, and publisher identity) taken only from verified plugin imports (below). 0001 relies on this
 signature for plugin pins.
 
-Two environment-wide fields ride along for core plugins ([0012](0012-rackmarshal-agent.md)): `coreKeyId`,
+Two environment-wide fields ride along for core plugins ([0012](0012-agent.md)): `coreKeyId`,
 naming the embedded core public key agents treat as current, and `coreRevocations`, a list of core key
 IDs and plugin digests. `coreRevocations` is signed by the other embedded core key and copied into the
 payload verbatim, so a compromised provisioner can neither rackmarshal a revocation nor drop one an agent has
@@ -151,10 +151,10 @@ Plugin signatures are verified here at import, and again on each host by the cor
 plugin before install ([0001](0001-project-repositories.md#agent-plugin-ecosystem)). A host installs a
 non-core plugin only when its digest matches a pin in a bundle this service signs and the validator
 accepts its signature for the pin's publisher identity
-([0012](0012-rackmarshal-agent.md#sigstore-verifier-measurements) records why the agent binary links no
+([0012](0012-agent.md#sigstore-verifier-measurements) records why the agent binary links no
 verifier).
 
-- **Import** — creating or updating a `Plugin` ([0014](0014-rackmarshal-agent-plugins.md)) downloads
+- **Import** — creating or updating a `Plugin` ([0014](0014-agent-plugins.md)) downloads
   `plugins-index.json`, the plugin manifest, and each listed asset's `.sigstore.json` bundle, and
   verifies them with [sigstore-go](https://github.com/sigstore/sigstore-go) `pkg/verify` against the
   referenced `PluginPublisher`: the keyless issuer and structured identity (repository, workflow, and
@@ -171,10 +171,10 @@ verifier).
   plugin pins in a bundle; anything else fails admission with `plugin_not_verified`.
 - **Pins** — each bundle pin carries the plugin name, version, per-platform SHA-256, and the publisher
   identity verified at import: the keyless issuer, repository, workflow, and refs, or the public key.
-  The host validator checks the same identity before install ([0012](0012-rackmarshal-agent.md)).
+  The host validator checks the same identity before install ([0012](0012-agent.md)).
 - **Core plugins** — `sigstore` and `sysfacts` ship in agent packages and are trusted through the
   core-plugin key embedded in the agent (0012); a pin for a newer core release also needs its core-signed
-  envelope on the host ([0014](0014-rackmarshal-agent-plugins.md)).
+  envelope on the host ([0014](0014-agent-plugins.md)).
 - **Trusted root** — proposed: refresh `trusted_root.json` through Sigstore's TUF repository
   (sigstore-go `pkg/tuf`), with a packaged fallback for air-gapped environments.
 - **Withdrawal** — removing a `Plugin` version or its `PluginPublisher` drops its pins from the
@@ -190,14 +190,14 @@ Level-triggered and idempotent, modeled on Kubernetes controllers
 2. **Lease** — workers claim rows with `SELECT … FOR UPDATE SKIP LOCKED`
    ([PostgreSQL](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE)) and set
    `lease_expires_at`, so replicas share the queue and a crashed worker's lease lapses.
-3. **Resolve** matching `DirectiveSet`s and the endpoint's facts from `rackmarshal-inventory`.
+3. **Resolve** matching `DirectiveSet`s and the endpoint's facts from `inventory`.
 4. **Render** `render`-phase scripts, validate every resource against its schema, and evaluate
    `dispatch` policies. Any error, timeout, or `deny` stops the endpoint with a condition.
 5. **Dispatch** — for an agent, store a new signed bundle only if the digest changed. For agentless
    devices, run the driver's `Observe` → `Plan` → `Apply` → `Observe`.
 6. **Record** status and requeue failures with exponential backoff (cap 30 minutes).
 
-Inventory changes arrive by polling a change cursor from [0009](0009-rackmarshal-inventory.md) (to be agreed);
+Inventory changes arrive by polling a change cursor from [0009](0009-inventory.md) (to be agreed);
 until it exists, the resync interval covers them.
 
 #### Policy (OPA)
@@ -283,13 +283,13 @@ type Driver interface {
   third party extends the service through a plugin instead ([0021](0021-plugin-extensibility.md)).
 - **Safety** — one lease per device, a per-connection concurrency cap, and per-call timeouts.
   `DirectiveSet.spec.mode: audit` runs `Observe` and `Plan` only.
-- **Observed state** is written back to `rackmarshal-inventory` through its `internal` API (0009), so both
+- **Observed state** is written back to `inventory` through its `internal` API (0009), so both
   enforcement paths converge against one catalog.
 
 ### Dependencies
 
-- **Rackmarshal** — `rackmarshal-api-schema` (models, schemas, embedded document), `rackmarshal-sdk` (`pkg/tlsconfig`,
-  `pkg/revocation`, `pkg/enroll` for the service certificate, and the inventory client), `rackmarshal-common`
+- **Rackmarshal** — `api-schema` (models, schemas, embedded document), `sdk` (`pkg/tlsconfig`,
+  `pkg/revocation`, `pkg/enroll` for the service certificate, and the inventory client), `common`
   (`logging`, `environment`, `telemetry`).
 - **Starter** — Echo v5, pgx v5, bun, goose, as in `go-echo-starter`. Replace the starter's direct
   `gopkg.in/yaml.v3` with `go.yaml.in/yaml/v3` v3.0.5, which the starter already lists as indirect and
@@ -313,9 +313,9 @@ Alternatives.
 
 **sigstore-go is heavy — flagged, and confined here.** Its verifier compiles in 71 modules, including
 23 `go-openapi` modules, OpenTelemetry, and gRPC (through Rekor v2 types, without serving or calling any
-gRPC API); [0012](0012-rackmarshal-agent.md#sigstore-verifier-measurements) records the measurement and import
+gRPC API); [0012](0012-agent.md#sigstore-verifier-measurements) records the measurement and import
 chains. It is accepted in this service and in the core `sigstore` validator plugin
-([0014](0014-rackmarshal-agent-plugins.md)), so the agent binary and other plugins never link it. The combined
+([0014](0014-agent-plugins.md)), so the agent binary and other plugins never link it. The combined
 set with
 OPA, Tengo, and jsonschema is not measured yet; the module allowlist records it.
 
@@ -363,7 +363,7 @@ in a metric label, only size and digest in a span.
 
 Credentials for devices are **never** stored here or in bundles: `credentialRef` names a secret that a
 `SecretProvider` resolves at apply time. The first provider reads files mounted by
-`rackmarshal-infrastructure`.
+`infrastructure`.
 
 A `credentialRef` is resolved within the writing tenant only: the provider reads
 `<secrets.directory>/<tenantId>/<name>`, rejects any `name` containing a path separator or `..`, and
@@ -385,7 +385,7 @@ placed in a policy input, a script value, or a rendered resource.
 - **Untrusted input** — size limits, alias rejection, strict schemas, OPA capability filtering, and the
   Tengo sandbox above; fuzzing covers YAML decoding and DSSE parsing.
 - **Signing** — the bundle key is the renewing service key from `pkg/enroll`; it never leaves the
-  process. Agents verify the chain and SPIFFE ID ([0012](0012-rackmarshal-agent.md)).
+  process. Agents verify the chain and SPIFFE ID ([0012](0012-agent.md)).
 - **Plugin releases** — Sigstore verification runs at import in this service, and again on hosts in the
   core validator against the identity in each pin (0012). `PluginPublisher` documents are audited like
   policies, and writing them is a separate permission from `Plugin`.
@@ -407,7 +407,7 @@ between them.
 
 ### Logging & telemetry
 
-Through `rackmarshal-common`. Fields `rackmarshal.tenant.id`, `rackmarshal.endpoint.id`, `rackmarshal.document.id`,
+Through `common`. Fields `rackmarshal.tenant.id`, `rackmarshal.endpoint.id`, `rackmarshal.document.id`,
 `rackmarshal.bundle.generation`, and `rackmarshal.policy.decision`; specs and rendered content are logged only as
 digests. Metrics: `rackmarshal.provisioner.reconcile.duration`, `rackmarshal.provisioner.queue.depth`,
 `rackmarshal.provisioner.policy.duration`, `rackmarshal.provisioner.script.duration`, and
@@ -440,8 +440,8 @@ from [CONVENTIONS.md](CONVENTIONS.md).
 
 ### Build, release & versioning
 
-Bootstrap from `go-echo-starter`, replacing its logging with `rackmarshal-common` and its route-metadata
-OpenAPI with the embedded contract from 0002. Binary `rackmarshal-provisioner`, shipped as the
+Bootstrap from `go-echo-starter`, replacing its logging with `common` and its route-metadata
+OpenAPI with the embedded contract from 0002. Binary `provisioner`, shipped as the
 [CONVENTIONS.md](CONVENTIONS.md#deployment-artifacts) deployment artifacts: the starter's Dockerfile and
 Helm chart (with the enrollment init container), signed deb and rpm packages, and a Windows installer.
 Database migrations are forward-only goose files; bundles are versioned by payload type so agents can
@@ -474,7 +474,7 @@ support the current and previous `apiVersion`.
   might still allow.
 - **On-host verification only** — without an import check, an unverifiable release could be pinned and
   would fail on every host instead of at admission; see
-  [0012](0012-rackmarshal-agent.md#sigstore-verifier-measurements).
+  [0012](0012-agent.md#sigstore-verifier-measurements).
 - **Out-of-process drivers over go-plugin, in this process** — isolates faults, but would bring gRPC into
   the service's own address space. [0021](0021-plugin-extensibility.md) instead runs a plugin service as a
   separate process on a local socket, which keeps the isolation; the
@@ -503,7 +503,7 @@ support the current and previous `apiVersion`.
 ## References
 
 - [0001 — Project Repositories](0001-project-repositories.md), [CONVENTIONS.md](CONVENTIONS.md),
-  [0002](0002-rackmarshal-api-schema.md), [0003](0003-rackmarshal-sdk.md), [0004](0004-rackmarshal-common.md).
+  [0002](0002-api-schema.md), [0003](0003-sdk.md), [0004](0004-common.md).
 - [OPA Go integration](https://www.openpolicyagent.org/docs/integration) and
   [`v1/rego`](https://pkg.go.dev/github.com/open-policy-agent/opa/v1/rego) — `PrepareForEval`,
   `Capabilities`, `StrictBuiltinErrors`, `EnablePrintStatements`; source read at v1.20.2.

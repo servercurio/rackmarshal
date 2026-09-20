@@ -20,11 +20,11 @@
 
 ## Context & goals
 
-The plugin model in [0013](0013-rackmarshal-agent-plugin-sdk.md), [0014](0014-rackmarshal-agent-plugins.md),
-and [0015](0015-rackmarshal-plugin-starter.md) is entirely agent-side: `hashicorp/go-plugin` binaries that
-`rackmarshal-agent` launches on the endpoint. `rackmarshal-provisioner` never runs plugin code. Its only
+The plugin model in [0013](0013-agent-plugin-sdk.md), [0014](0014-agent-plugins.md),
+and [0015](0015-plugin-starter.md) is entirely agent-side: `hashicorp/go-plugin` binaries that
+`agent` launches on the endpoint. `provisioner` never runs plugin code. Its only
 relationship to a plugin is supply chain — verifying a release at import and pinning digests into bundles
-([0011](0011-rackmarshal-provisioner.md)).
+([0011](0011-provisioner.md)).
 
 That is enough for a plugin whose whole job is to converge a kind on a host. It is not enough for four
 things the design has since needed, three of which the existing documents already circle without naming:
@@ -57,7 +57,7 @@ things the design has since needed, three of which the existing documents alread
 
 - Changing how agent plugins are launched, sandboxed, or verified on the host — 0012 and 0013 stand.
 - A plugin marketplace, discovery, or dependency resolution between plugins.
-- Plugin-authored schemas replacing `rackmarshal-api-schema` as the source of truth for built-in kinds
+- Plugin-authored schemas replacing `api-schema` as the source of truth for built-in kinds
   ([0020](0020-desired-state-kinds.md)).
 - Letting a plugin apply state directly. A provisioner service proposes; the platform decides.
 
@@ -158,7 +158,7 @@ needed only by plugins that genuinely interpret or propose.
 #### Provisioner plugin host
 
 A provisioner-side half is **a separate process with its own lifecycle**, never code loaded into the
-service. It speaks the protobuf contract from `rackmarshal-agent-plugin-sdk`, extended with the services
+service. It speaks the protobuf contract from `agent-plugin-sdk`, extended with the services
 below, over mutual TLS on a loopback or Unix-socket transport.
 
 | Target | Process model | Transport |
@@ -172,9 +172,9 @@ Every row is a local transport. A provisioner-side half binds no port and is not
 the host or pod, which is what keeps adding a plugin from adding an attack surface.
 
 **This requires amending an explicit convention.** CONVENTIONS states "there is no service-to-service
-gRPC; gRPC appears only between `rackmarshal-agent` and plugins." The principle behind that rule is that
+gRPC; gRPC appears only between `agent` and plugins." The principle behind that rule is that
 *services* speak one REST + JSON contract, and *a host speaks to its plugins* over the plugin protobuf
-contract. This proposal widens the carve-out from "`rackmarshal-agent` and plugins" to "a host process and
+contract. This proposal widens the carve-out from "`agent` and plugins" to "a host process and
 its plugins" and changes nothing about service-to-service traffic. That is a deliberate amendment to be
 made in CONVENTIONS, not a reading of the existing text, and it is listed under Alternatives with the two
 options that would have avoided it.
@@ -214,10 +214,10 @@ over a local socket, and the halves reach each other the way everything else in 
 payload carried over the existing REST + JSON path through the gateway:
 
 ```
-plugin half ──gRPC over local socket──► rackmarshal-agent
+plugin half ──gRPC over local socket──► agent
                                              │  outbox, then POST /provisioner/v1alpha1/enforcement-reports
-                                             ▼  mutual TLS through rackmarshal-gateway (0008)
-                                     rackmarshal-provisioner
+                                             ▼  mutual TLS through gateway (0008)
+                                     provisioner
                                              │  gRPC over local socket
                                              ▼
                                         plugin half
@@ -244,7 +244,7 @@ message ApplyResourceResponse {
 | Plugin half to agent | 16 KiB per resource | `serve`, which refuses a larger response |
 | Agent to outbox | 256 KiB per report | The agent, which truncates and sets a `result_truncated` condition |
 | Outbox budget | Counts against `outbox.maxBytes` | Existing 50 MiB cap and drop counter (0012) |
-| Agent to provisioner | The agent ingress body limit, 8 MiB | `rackmarshal-gateway`, unchanged (0008) |
+| Agent to provisioner | The agent ingress body limit, 8 MiB | `gateway`, unchanged (0008) |
 | Stored | 30-day partitions | `enforcement_reports`, unchanged retention |
 | Provisioner to plugin half | `plugins.result.maxBytes` | The plugin host, before the call |
 
@@ -329,17 +329,17 @@ The resulting stacks, with the new layer in bold:
 
 ### Dependencies
 
-- **Rackmarshal** — `rackmarshal-agent-plugin-sdk` gains the provisioner-side services and the `serve`
-  helpers for them; `rackmarshal-api-schema` gains the `Plugin` kind; `rackmarshal-provisioner` gains the
+- **Rackmarshal** — `agent-plugin-sdk` gains the provisioner-side services and the `serve`
+  helpers for them; `api-schema` gains the `Plugin` kind; `provisioner` gains the
   plugin host.
 - **Third-party** — the mandatory path adds **nothing**. Validating a bundle's schemas and evaluating its
-  Rego uses the jsonschema and OPA v1.20.2 that `rackmarshal-provisioner` already links (0011), and
+  Rego uses the jsonschema and OPA v1.20.2 that `provisioner` already links (0011), and
   verifying the bundle uses the sigstore-go it already links for imports. This is the strongest argument
   for splitting the bundle from the service: the part every plugin must ship costs no new dependency.
   The optional plugin host does carry a cost — 0013's gRPC and go-plugin stack, measured at 14 linked
   modules — and because it is now needed only by plugins that interpret or propose, putting it behind a
   build tag is practical rather than theoretical. See Open questions.
-- **Plugin authors** — `rackmarshal-plugin-starter` (0015) grows a provisioner-half example and a second
+- **Plugin authors** — `plugin-starter` (0015) grows a provisioner-half example and a second
   fake host, so the local harness exercises the bundle, the optional service, and their pinning together.
 
 ### Data & storage
@@ -418,7 +418,7 @@ each host-to-plugin call, so a proposal is traceable back to the report that pro
 One release train per plugin, as 0014 already sets for the first-party set: every artifact built from one
 commit, released under one tag, signed by one publisher identity, and recorded in one `plugins-index.json`.
 The provisioner bundle is a release asset like the binaries, signed the same way. A release without one is
-not a valid plugin release, which CI enforces in `rackmarshal-plugin-starter` (0015) so a third party finds
+not a valid plugin release, which CI enforces in `plugin-starter` (0015) so a third party finds
 out at build time rather than at import.
 
 ### Testing
@@ -464,7 +464,7 @@ out at build time rather than at import.
   already weighed wazero for OPA. Rejected for now because the agent half is a native binary with OS
   privileges, and a plugin whose two halves have different execution models is harder to write, test, and
   reason about than one that does not.
-- **Results into `rackmarshal-inventory` as facts** — the existing `Fact.value_json` path already reaches
+- **Results into `inventory` as facts** — the existing `Fact.value_json` path already reaches
   the provisioner and needs no new field. It is the wrong shape: facts are endpoint state on a 5-minute
   cadence, not the outcome of one apply, and they carry no `reportId` to correlate against.
 - **Unscoped plugin policy with review as the control** — simpler, and what a trusted-plugin model would
@@ -477,14 +477,14 @@ out at build time rather than at import.
 ## Open questions
 
 - **Module budget** — the plugin host would move 0013's gRPC and go-plugin stack (14 linked modules) into
-  `rackmarshal-provisioner`, which already links OPA's 26. With the bundle mandatory and the service
+  `provisioner`, which already links OPA's 26. With the bundle mandatory and the service
   optional, a build tag now looks right rather than merely tempting: the default build would validate and
   police every plugin kind while linking no gRPC at all. Confirm, and decide whether the tagged build is
   the default in released artifacts.
 - **Where a plugin's schemas live** — this document assumes the plugin publishes them and the provisioner
   half validates against them, which answers 0011's "who publishes their schemas" and 0013's "how do their
   schemas reach the agent and 0011". Does 0020's "no standalone JSON Schema files" rule extend to
-  plugin-defined kinds, whose Go types cannot live in `rackmarshal-api-schema`?
+  plugin-defined kinds, whose Go types cannot live in `api-schema`?
 - **`AgentPlugin` migration** — rename with an alias for one release, or a breaking change while every
   kind is still `v1alpha1`?
 - **Sidecar lifecycle on Kubernetes** — a native sidecar (an init container with `restartPolicy: Always`)
@@ -501,18 +501,18 @@ out at build time rather than at import.
 
 - [0001 — Project Repositories](0001-project-repositories.md#agent-plugin-ecosystem) — the plugin
   ecosystem and its verification requirements.
-- [0011 — rackmarshal-provisioner](0011-rackmarshal-provisioner.md) — policy layers and the OPA contract,
+- [0011 — provisioner](0011-provisioner.md) — policy layers and the OPA contract,
   the `Driver` interface and its "built in, compiled in" rule, plugin import verification and
   `plugin_verifications`, `enforcement_reports` and the "never content" rule, and the rejection of
   out-of-process drivers over go-plugin.
-- [0012 — rackmarshal-agent](0012-rackmarshal-agent.md) — the agent policy stack and its denial-only local
+- [0012 — agent](0012-agent.md) — the agent policy stack and its denial-only local
   layer, the plugin host and core trust, report contents, and the outbox budget.
-- [0013 — rackmarshal-agent-plugin-sdk](0013-rackmarshal-agent-plugin-sdk.md) — the wire contract,
+- [0013 — agent-plugin-sdk](0013-agent-plugin-sdk.md) — the wire contract,
   `Resource.spec_json`, the capability model and grant intersection, and the open questions on third-party
   kinds and host callbacks.
-- [0014 — rackmarshal-agent-plugins](0014-rackmarshal-agent-plugins.md) — the one-release-train model,
+- [0014 — agent-plugins](0014-agent-plugins.md) — the one-release-train model,
   `AgentPlugin` and `PluginPublisher`, signing, and SBOMs.
-- [0015 — rackmarshal-plugin-starter](0015-rackmarshal-plugin-starter.md) — the third-party template and
+- [0015 — plugin-starter](0015-plugin-starter.md) — the third-party template and
   its local harness.
 - [0020 — Desired-state kinds](0020-desired-state-kinds.md) — the document envelope, the resource envelope,
   and the rule that Go types are the only description of a kind.

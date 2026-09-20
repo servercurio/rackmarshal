@@ -2,7 +2,7 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0012 — rackmarshal-agent
+# 0012 — agent
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
@@ -25,7 +25,7 @@ its on-host OPA re-check and Tengo sandbox
 ([Desired-state format](0001-project-repositories.md#desired-state-format)), its plugin model
 ([Agent plugin ecosystem](0001-project-repositories.md#agent-plugin-ecosystem)), and that it records its
 environment from enrollment ([Environment awareness](0001-project-repositories.md#environment-awareness)).
-It reaches Rackmarshal only through the gateway's agent ingress via `rackmarshal-sdk`.
+It reaches Rackmarshal only through the gateway's agent ingress via `sdk`.
 
 **Goals**
 
@@ -41,12 +41,12 @@ It reaches Rackmarshal only through the gateway's agent ingress via `rackmarshal
 
 **Non-goals**
 
-- The plugin gRPC contract — [0013](0013-rackmarshal-agent-plugin-sdk.md); first-party and core plugins, and
-  core signing — [0014](0014-rackmarshal-agent-plugins.md).
+- The plugin gRPC contract — [0013](0013-agent-plugin-sdk.md); first-party and core plugins, and
+  core signing — [0014](0014-agent-plugins.md).
 - Desired-state authoring, targeting, bundle signing, and plugin import verification —
-  [0011](0011-rackmarshal-provisioner.md).
-- Inventory schemas and storage — [0009](0009-rackmarshal-inventory.md); CA and token format —
-  [0006](0006-rackmarshal-identity.md).
+  [0011](0011-provisioner.md).
+- Inventory schemas and storage — [0009](0009-inventory.md); CA and token format —
+  [0006](0006-identity.md).
 
 ## Proposal
 
@@ -66,16 +66,16 @@ and inventory to `spool/outbox`. Other commands: `enroll`, `status`, `version`, 
 
 #### Enrollment
 
-`rackmarshal-agent enroll --token-file <path>` (or the token on stdin, never as an argument, so it cannot leak
-through the process list), built on `rackmarshal-sdk` `pkg/enroll` ([0003](0003-rackmarshal-sdk.md)):
+`agent enroll --token-file <path>` (or the token on stdin, never as an argument, so it cannot leak
+through the process list), built on `sdk` `pkg/enroll` ([0003](0003-sdk.md)):
 
 1. `enroll.ParseToken` reads the environment ID and CA certificate hash offline.
 2. **Key** — `keystore.auto` picks, in order: TPM 2.0 on Linux (`/dev/tpmrm0` via `go-tpm`, an ECC P-256
    signing key under the storage root key, stored as TPM-wrapped blobs), the Windows Platform Crypto
-   Provider (`certtostore`), then `enroll.FileKeyStore` (`0600`, owned by `rackmarshal-agent`). The chosen
+   Provider (`certtostore`), then `enroll.FileKeyStore` (`0600`, owned by `agent`). The chosen
    backend is reported in inventory as `keyProtection` so policies can require hardware keys.
 3. `enroll.Enroll` checks that the gateway's chain matches the token's CA hash and that its SPIFFE ID is
-   `spiffe://<environment-id>/service/rackmarshal-gateway`. Only then does it send the CSR.
+   `spiffe://<environment-id>/service/gateway`. Only then does it send the CSR.
 4. The certificate carries `spiffe://<environment-id>/agent/<agent-id>`. `Result` is written atomically
    to `identity/` with the environment `id`, `name`, `tier`, and `caBundle`.
 
@@ -94,7 +94,7 @@ the host is re-enrolled.
   older than its `nextUpdate` stops new bundles from being accepted, and why `revocation.crlUrl` may name
   a source that does not pass through the gateway.
 - **Verify** (executor, fail closed): the DSSE signature; a signer chain to the environment roots
-  evaluated at `issuedAt`; a signer SPIFFE ID of `spiffe://<environment-id>/service/rackmarshal-provisioner`,
+  evaluated at `issuedAt`; a signer SPIFFE ID of `spiffe://<environment-id>/service/provisioner`,
   not revoked by a CRL whose `nextUpdate` has not passed; `environmentId` and `agentId` equal to the
   recorded values; `generation` greater than the last accepted one but not more than
   `bundle.maxGenerationJump` (default 1000) beyond it, so a forged bundle cannot set it near the type's
@@ -103,7 +103,7 @@ the host is re-enrolled.
   bundle's `coreKeyId` and revocation list are recorded with the same monotonicity: a bundle may move the
   current core key forward or add revocations, never move back or drop them, so a replayed older bundle
   cannot restore a retired or revoked key.
-- **Validate** each resource against its JSON Schema — embedded from `rackmarshal-api-schema` for built-in
+- **Validate** each resource against its JSON Schema — embedded from `api-schema` for built-in
   kinds, and from the plugin's provisioner bundle for a plugin kind
   ([0021](0021-plugin-extensibility.md)). The provisioner validated the same specs before signing; the
   agent validates them again on accept, because neither end relies on the other having checked. A
@@ -139,7 +139,7 @@ the host is re-enrolled.
 
 Collectors use `gopsutil` (host, CPU, memory, disks, interfaces), `/etc/os-release`, and the package
 database. Privileged facts such as DMI serials come from the executor through the outbox. Full reports
-every 6 hours and changed-digest deltas every 5 minutes go to `rackmarshal-inventory` (operation per 0009).
+every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (operation per 0009).
 
 #### Plugin host
 
@@ -151,14 +151,14 @@ every 6 hours and changed-digest deltas every 5 minutes go to `rackmarshal-inven
   leave a swap window between the two. Nothing but root can write this store, and every launch
   re-reads the sidecar digest and re-checks it against the accepted bundle pin before the hash.
 - **Core plugins** — `sigstore` (`rackmarshal-plugin-sigstore`, the Sigstore validator) and `sysfacts` are
-  built in [0014](0014-rackmarshal-agent-plugins.md) and ship in every agent package under
+  built in [0014](0014-agent-plugins.md) and ship in every agent package under
   `/usr/lib/rackmarshal-agent/plugins/<name>/`, each beside its `<asset>.core.dsse.json` envelope, root-owned
   and read-only. They are enabled by default. Root-owned local config may disable them
   (`plugins.core.disabled`), but cannot replace them: a binary runs as a core plugin only if its core
   statement verifies. With `sigstore` disabled, no non-core plugin can be installed (fail closed).
 - **Core trust** — the agent embeds the Rackmarshal core-plugin public keys with `//go:embed`
   ([`embed`](https://pkg.go.dev/embed)): ECDSA P-256, as a list holding the current and next key for
-  rotation. The private key stays in an HSM or cloud KMS and is used only by the `rackmarshal-agent-plugins`
+  rotation. The private key stays in an HSM or cloud KMS and is used only by the `agent-plugins`
   release workflow (0014). Before install and before every launch, the process launching a core plugin
   verifies its [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md) envelope with
   the standard-library ECDSA code that already verifies bundles:
@@ -175,7 +175,7 @@ every 6 hours and changed-digest deltas every 5 minutes go to `rackmarshal-inven
   envelope, and every launch re-verifies the envelope.
 - **Install of other plugins** (executor, fail closed) — a downloaded plugin is moved into the store only
   when both checks pass:
-  1. **Pin** — its SHA-256 equals a pin in the accepted, signature-verified bundle. `rackmarshal-provisioner`
+  1. **Pin** — its SHA-256 equals a pin in the accepted, signature-verified bundle. `provisioner`
      verified that release against the publisher's Sigstore signature at import (0011), and the pin
      carries the publisher identity it used.
   2. **Validator** — the executor verifies the core `sigstore` plugin's envelope, launches it in
@@ -269,7 +269,7 @@ every 6 hours and changed-digest deltas every 5 minutes go to `rackmarshal-inven
 
 ### Dependencies
 
-- **Rackmarshal** — `rackmarshal-sdk`, `rackmarshal-api-schema`, `rackmarshal-common`, `rackmarshal-agent-plugin-sdk`.
+- **Rackmarshal** — `sdk`, `api-schema`, `common`, `agent-plugin-sdk`.
 - **Starter** — cobra and `ants` from `go-cli-starter`. Its database packages (pgx, bun, goose) are
   removed: the agent keeps files, not a database.
 - **New, measured** on 2026-09-15 in throwaway `linux/amd64` modules (`CGO_ENABLED=0`, stripped), counting
@@ -334,9 +334,9 @@ The validator links 65 modules beyond go-plugin. It shares `grpc`, `protobuf`, `
 **Decision: no verifier in the agent binary.** A Rackmarshal-built verifier on the small building blocks above
 would link about 4–6 modules (an estimate; that combination is not built), but it would re-implement
 security-critical checks: the Fulcio certificate chain and identity, SCTs, and transparency-log
-inclusion proofs and checkpoints. Instead, `rackmarshal-provisioner` verifies publisher signatures with
-sigstore-go when a plugin release is imported ([0011](0011-rackmarshal-provisioner.md)), and the core
-`sigstore` validator plugin ([0014](0014-rackmarshal-agent-plugins.md)) verifies them again on the host with
+inclusion proofs and checkpoints. Instead, `provisioner` verifies publisher signatures with
+sigstore-go when a plugin release is imported ([0011](0011-provisioner.md)), and the core
+`sigstore` validator plugin ([0014](0014-agent-plugins.md)) verifies them again on the host with
 sigstore-go in its own unprivileged process. The agent binary keeps its 44 modules and verifies only
 bundles and core envelopes with standard-library ECDSA. The trade-off is a 17 MiB core plugin on every
 host and a second trust anchor, the core-plugin key. OPA is the largest addition to the agent; gRPC
@@ -379,7 +379,7 @@ owned by the OS package manager.
   the identity in its pin, which leaves a public record. Logs carry digests, key IDs, and identities,
   never key material.
 - **Core-plugin key** — only public keys are embedded. The private key signs only from the
-  `rackmarshal-agent-plugins` release workflow through the HSM or KMS, whose audit log records each use.
+  `agent-plugins` release workflow through the HSM or KMS, whose audit log records each use.
   Because a stolen key would otherwise reach every host, two limits apply: a core statement names the
   environments it is valid for, and a revocation list of key IDs and plugin digests, signed by the other
   embedded key and carried in the directive bundle, is applied before any core verification. A revoked
@@ -425,12 +425,12 @@ reports, bundles, and plugins are all checked against the recorded ID.
 
 ### Logging & telemetry
 
-Through `rackmarshal-common` in both processes, with `rackmarshal.agent.id`, `rackmarshal.bundle.generation`,
+Through `common` in both processes, with `rackmarshal.agent.id`, `rackmarshal.bundle.generation`,
 `rackmarshal.resource.kind`, and `rackmarshal.plugin.name`. Metrics: `rackmarshal.agent.enforce.duration`,
 `rackmarshal.agent.resources.drifted`, `rackmarshal.agent.plugin.restarts`, and `rackmarshal.agent.outbox.dropped`.
 Telemetry export runs only from `serve`; the executor writes its metrics to the outbox.
 
-The OTLP log sink ([0004](0004-rackmarshal-common.md)) is **off by default on the agent**, unlike the
+The OTLP log sink ([0004](0004-common.md)) is **off by default on the agent**, unlike the
 services. An endpoint is where the network is least likely to reach a collector — that is the point of
 managing it — and an agent that retried log export against an unreachable endpoint would spend its
 outbox budget on its own telemetry. The console sink writes logfmt to stderr, which journald on Linux
@@ -470,10 +470,10 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 - **Packaging** — deb, rpm, and apk through [nfpm](https://nfpm.goreleaser.com) v2.47.0 run with
   `go run`; an NSIS installer for Windows and a pkg for macOS. Packages include the units, users, and
   cosign-signed checksums plus the starter's signed SBOM, and the core plugins with their envelopes,
-  pinned by `rackmarshal-agent-plugins` version and per-platform SHA-256 (0014). The packaging job verifies
+  pinned by `agent-plugins` version and per-platform SHA-256 (0014). The packaging job verifies
   each envelope against the embedded keys, and each cosign bundle, before building.
 - **Upgrades** — through the OS package manager, which a bundle may drive with a `Package` resource for
-  `rackmarshal-agent`. The executor applies it last and restarts both units. An agent accepts the current and
+  `agent`. The executor applies it last and restarts both units. An agent accepts the current and
   previous bundle `apiVersion`.
 
 ### Testing
@@ -523,10 +523,10 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 - **macOS keys** — Secure Enclave needs cgo; is a file key store acceptable there?
 - **Windows service account model** — a virtual service account per service, and how the installer
   creates it.
-- **Agent ID** — assigned by `rackmarshal-identity` at enrollment (assumed) or derived from the key?
+- **Agent ID** — assigned by `identity` at enrollment (assumed) or derived from the key?
 - **Core plugin downgrades** — may a bundle pin a core-signed version older than the packaged one?
 - **Air-gapped TUF mirrors** — who copies Sigstore's repository into a mirror, how often (before
-  timestamp metadata expires), and does `rackmarshal-infrastructure` own it? Private Sigstore deployments would
+  timestamp metadata expires), and does `infrastructure` own it? Private Sigstore deployments would
   need a different embedded root.
 - **Re-validation on trusted-root change** — re-verify installed plugins and block failures (proposed);
   should a failure also stop a running plugin?
@@ -537,8 +537,8 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 ## References
 
 - [0001 — Project Repositories](0001-project-repositories.md), [CONVENTIONS.md](CONVENTIONS.md),
-  [0003](0003-rackmarshal-sdk.md), [0004](0004-rackmarshal-common.md), [0011](0011-rackmarshal-provisioner.md),
-  [0013](0013-rackmarshal-agent-plugin-sdk.md), [0014](0014-rackmarshal-agent-plugins.md).
+  [0003](0003-sdk.md), [0004](0004-common.md), [0011](0011-provisioner.md),
+  [0013](0013-agent-plugin-sdk.md), [0014](0014-agent-plugins.md).
 - [`hashicorp/go-plugin`](https://github.com/hashicorp/go-plugin) —
   [`SecureConfig`](https://pkg.go.dev/github.com/hashicorp/go-plugin#SecureConfig), `SkipHostEnv`,
   `AutoMTLS`, `UnixSocketConfig`; source read at v1.8.0.

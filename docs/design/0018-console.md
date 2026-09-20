@@ -2,14 +2,14 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0018 — rackmarshal-console
+# 0018 — console
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-16
-- **Summary:** `rackmarshal-console` is the platform administrator's surface: tenants, identity and federation,
+- **Summary:** `console` is the platform administrator's surface: tenants, identity and federation,
   the environment's certificate authority and key backend, agent enrollment, plugin publishers, and the
-  audit chain. It is separated from `rackmarshal-portal` because it holds the controls that create trust —
+  audit chain. It is separated from `portal` because it holds the controls that create trust —
   issuing enrollment tokens and approving service enrollments — and those should not share a process with
   the tenant-facing application. Every action here is audited, and the ones that create trust require a
   fresh authentication.
@@ -20,8 +20,8 @@
 
 ## Context & goals
 
-Everything an administrator does to a Rackmarshal deployment today happens through `rackmarshal-cli` against
-`rackmarshal-identity`, `rackmarshal-provisioner`, and the gateway. That works, and for scripted operations it
+Everything an administrator does to a Rackmarshal deployment today happens through `cli` against
+`identity`, `provisioner`, and the gateway. That works, and for scripted operations it
 remains the right tool. What it does not do is show a state that is spread across several services at
 once: whether the environment's certificate authority is healthy, whether the audit chain is still being
 anchored, which service enrollments are waiting for a second approval, and which core plugin key agents
@@ -40,11 +40,11 @@ wrong, and acts — which is the shape a page serves better than a command.
 
 **Non-goals**
 
-- Tenant-level work — endpoints, directive sets, plans, and drift are [0017](0017-rackmarshal-portal.md).
-- Replacing `rackmarshal-cli` for automation, break-glass, or air-gapped operation. The console is an
+- Tenant-level work — endpoints, directive sets, plans, and drift are [0017](0017-portal.md).
+- Replacing `cli` for automation, break-glass, or air-gapped operation. The console is an
   additional surface, never the only path to an operation.
 - Holding any private key or performing any cryptographic operation itself. Signing stays in
-  `rackmarshal-identity`'s HSM or KMS backend.
+  `identity`'s HSM or KMS backend.
 - A metrics or logging product. Telemetry goes to the OpenTelemetry collector; the console links out.
 
 ## Proposal
@@ -57,7 +57,7 @@ wrong, and acts — which is the shape a page serves better than a command.
 - Administer tenants, platform users, roles, and external identity provider configuration.
 - Administer agent enrollment across tenants: tokens, agents, certificate expiry, and revocation.
 - Show plugin publishers, verified plugin imports, the current core plugin key, and revocations.
-- Nothing that `rackmarshal-cli` cannot also do. Every button maps to an existing gateway operation.
+- Nothing that `cli` cannot also do. Every button maps to an existing gateway operation.
 
 ### Interfaces
 
@@ -110,8 +110,8 @@ Two of these carry a state that is easy to miss and expensive to miss:
 
 #### The approval queue
 
-0006 requires a second operator to approve a service enrollment for `service/rackmarshal-gateway`, because that
-certificate is what lets a peer assert `X-Rackmarshal-Principal` for any user or tenant. In `rackmarshal-cli` this is
+0006 requires a second operator to approve a service enrollment for `service/gateway`, because that
+certificate is what lets a peer assert `X-Rackmarshal-Principal` for any user or tenant. In `cli` this is
 a command an administrator must know to run. Here it is a queue:
 
 - Each entry names the requested SPIFFE ID, the requesting control node, the registered CSR public key
@@ -124,7 +124,7 @@ a command an administrator must know to run. Here it is a queue:
 
 #### Cross-tenant work is explicit
 
-`rackmarshal-portal` derives the tenant from the session and never from the request. The console is the
+`portal` derives the tenant from the session and never from the request. The console is the
 opposite: it acts across tenants by design, so scope is always explicit and always recorded.
 
 - Any page scoped to one tenant names that tenant in the masthead beside the environment.
@@ -135,7 +135,7 @@ opposite: it acts across tenants by design, so scope is always explicit and alwa
 #### Destructive and trust-creating actions
 
 The console inherits 0010's confirmation convention and adds one rule of its own. Retiring, revoking, and
-suspending require typing the environment name, as in `rackmarshal-cli` and `rackmarshal-portal`. Beyond that:
+suspending require typing the environment name, as in `cli` and `portal`. Beyond that:
 
 | Action                              | Step-up | Second operator | Confirmation |
 |-------------------------------------|---------|-----------------|--------------|
@@ -146,12 +146,12 @@ suspending require typing the environment name, as in `rackmarshal-cli` and `rac
 | Change the current core plugin key  | yes     | no              | environment  |
 | Suspend a tenant                    | no      | no              | environment  |
 
-Step-up requests `prompt=login` with `max_age=300` against `rackmarshal-identity`, which in hardened tiers
+Step-up requests `prompt=login` with `max_age=300` against `identity`, which in hardened tiers
 lands on a WebAuthn prompt because 0006 already requires WebAuthn for platform administrators there.
 
 ### Dependencies
 
-As 0016 fixes: templ, Echo, htmx, Alpine's CSP build, `rackmarshal-sdk`, `rackmarshal-common`, and the vendored
+As 0016 fixes: templ, Echo, htmx, Alpine's CSP build, `sdk`, `common`, and the vendored
 `tokens.css` from [0019](0019-brand-identity.md). The console adds nothing further. The overview's small
 charts are inline SVG rather than a charting library, for the same reason as in 0017: no second script
 origin in the content security policy.
@@ -171,12 +171,12 @@ assumed:
 - **No standing authority.** The console holds the signed-in administrator's token and nothing more. It
   has no service account with rights beyond a user, so compromising the process yields whatever the
   currently signed-in sessions hold, not the deployment.
-- **No private keys, ever.** Every signing operation happens in `rackmarshal-identity`'s HSM or KMS backend.
+- **No private keys, ever.** Every signing operation happens in `identity`'s HSM or KMS backend.
   The console renders key metadata — `kid`, backend, state — and never key material, sealed or otherwise.
 - **Step-up on trust creation**, as tabulated above, so a stolen session cookie alone cannot issue an
   enrollment token.
 - **Two-person enforcement server-side.** The approver-is-not-requester check is enforced by
-  `rackmarshal-identity`; the console refuses early only to give a readable message. A console defect cannot
+  `identity`; the console refuses early only to give a readable message. A console defect cannot
   defeat the rule.
 - **Audit before effect.** Every console action produces an audit event in the same transaction as the
   change, per 0006. An action that cannot be audited does not happen.
@@ -194,7 +194,7 @@ is still required for the approval queue, so the two-person flow is exercised wh
 
 ### Logging & telemetry
 
-Through `rackmarshal-common`, per CONVENTIONS, with 0016's fields. Console spans carry the administrator
+Through `common`, per CONVENTIONS, with 0016's fields. Console spans carry the administrator
 principal, the action, and the target, and never the values being administered. Specifically: no key
 material, no token values, no CSR contents, and no audit event bodies enter logs or spans — the console
 renders those to the operator and forgets them.
@@ -218,7 +218,7 @@ NSIS installer. No cgo, so it cross-compiles normally.
 
 - Handler tests cover the full-page and fragment render paths for every route, as in 0017.
 - The approval queue has a dedicated test that the same principal cannot both request and approve, and
-  that the console's early refusal matches what `rackmarshal-identity` enforces.
+  that the console's early refusal matches what `identity` enforces.
 - Step-up tests assert that every action in the table above rejects a session older than `stepUpMaxAge`.
 - An anchor-freshness test asserts a missed interval renders as `critical`, not as a quiet absence.
 - axe-core runs against every page in CI, per 0016.
@@ -231,7 +231,7 @@ NSIS installer. No cgo, so it cross-compiles normally.
 - **Putting the console behind the `internal` audience** — appealing, since these are internal
   operations. Rejected because the console acts as a signed-in human, and `internal` operations are
   service-to-service and deliberately never routed by the gateway (CONVENTIONS).
-- **A read-only console, with all writes through `rackmarshal-cli`** — genuinely tempting, and it would remove
+- **A read-only console, with all writes through `cli`** — genuinely tempting, and it would remove
   most of the security surface above. Rejected because the approval queue is the point: an approval that
   requires leaving the page to run a command will be done from the page's information without reading it.
 - **Embedding a metrics dashboard** — rejected; Rackmarshal exports OpenTelemetry and the collector's own tools
@@ -240,11 +240,11 @@ NSIS installer. No cgo, so it cross-compiles normally.
 ## Open questions
 
 - **Break-glass** — 0006 asks whether local accounts in `production` are break-glass only. If they are,
-  should the console refuse to authenticate them at all, forcing break-glass through `rackmarshal-cli`?
+  should the console refuse to authenticate them at all, forcing break-glass through `cli`?
 - **Approval notification** — the queue is visible when an administrator visits. Who tells them a request
   is waiting, given Rackmarshal has no notification component?
 - **Audit retention and export** — the console renders the chain, but an auditor will want an export.
-  Does that belong here, in `rackmarshal-cli`, or in neither?
+  Does that belong here, in `cli`, or in neither?
 - **Multi-environment view** — an operator running four environments has four consoles. Is a single
   cross-environment surface desirable, or does it undermine the environment isolation 0001 establishes?
 - **Core key changeover** — 0012 leaves the ceremony open. If the next key is held on an offline HSM
@@ -252,11 +252,11 @@ NSIS installer. No cgo, so it cross-compiles normally.
 
 ## References
 
-- [0006](0006-rackmarshal-identity.md) — tenants, users, federation, PKI, key backends, the service-enrollment
+- [0006](0006-identity.md) — tenants, users, federation, PKI, key backends, the service-enrollment
   second approval, and the audit chain with its external anchors.
-- [0007](0007-rackmarshal-sso.md) — the login site and per-tenant external IdP configuration.
-- [0011](0011-rackmarshal-provisioner.md) — plugin publishers, verified imports, and the bundle fields the
+- [0007](0007-sso.md) — the login site and per-tenant external IdP configuration.
+- [0011](0011-provisioner.md) — plugin publishers, verified imports, and the bundle fields the
   core-key page reads.
-- [0012](0012-rackmarshal-agent.md) — the core plugin key, its revocation list, and CRL freshness rules.
+- [0012](0012-agent.md) — the core plugin key, its revocation list, and CRL freshness rules.
 - [0016](0016-web-ui-architecture.md) — stack, session, step-up mechanism, CSP, and configuration.
 - [0019](0019-brand-identity.md) — tokens, tier stripe, and state vocabulary.

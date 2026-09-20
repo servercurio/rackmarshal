@@ -2,12 +2,12 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0005 — rackmarshal-infrastructure
+# 0005 — infrastructure
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
-- **Summary:** `rackmarshal-infrastructure` is an Ansible project that deploys Rackmarshal's own services to three
+- **Summary:** `infrastructure` is an Ansible project that deploys Rackmarshal's own services to three
   target types from one inventory per environment: Kubernetes (each service's Helm chart), containers
   (Podman Quadlet or Docker Compose), and the operating system directly (signed deb and rpm packages
   under systemd, or NSIS-installed Windows services). Conftest checks inventories and all rendered Helm,
@@ -25,14 +25,14 @@
 by OPA policies, with Conftest in pull-request CI and a control node that runs merged playbooks so
 deployment credentials never live in CI
 ([Rackmarshal's own infrastructure](0001-project-repositories.md#rackmarshals-own-infrastructure)). It must not
-depend on `rackmarshal-agent` or `rackmarshal-provisioner`. Each inventory supplies its environment's name, tier,
+depend on `agent` or `provisioner`. Each inventory supplies its environment's name, tier,
 ID, and CA bundle, and the control node holds a root-signed certificate
 ([Environment identity](0001-project-repositories.md#environment-identity)).
 
 Kubernetes support is mandatory, beside containers and direct installs on a compatible OS, all through
 this one pipeline. Certificate bootstrap depends on the target: the control node delivers single-use
 tokens to containers and hosts, while pods enroll with projected service account tokens that
-`rackmarshal-identity` verifies offline. Service repositories ship the artifacts in
+`identity` verifies offline. Service repositories ship the artifacts in
 [CONVENTIONS — Deployment artifacts](CONVENTIONS.md#deployment-artifacts).
 
 **Goals**
@@ -46,8 +46,8 @@ tokens to containers and hosts, while pods enroll with projected service account
 
 **Non-goals**
 
-- Managing customer endpoints — that is `rackmarshal-provisioner` and `rackmarshal-agent`.
-- Certificate issuance, token formats, and token verification — [0006](0006-rackmarshal-identity.md).
+- Managing customer endpoints — that is `provisioner` and `agent`.
+- Certificate issuance, token formats, and token verification — [0006](0006-identity.md).
 - Building images, charts, packages, and Windows installers — each service repository, per CONVENTIONS.
 - Creating clusters, installing operating systems, and choosing a telemetry backend; this repository
   starts from a reachable namespace or host and deploys only an in-environment OTLP collector.
@@ -82,7 +82,7 @@ Kubernetes follows the upstream window of three minors, 1.35–1.37 today
 #### Repository layout
 
 ```
-rackmarshal-infrastructure/
+infrastructure/
 ├── ansible.cfg  requirements.yml  execution-environment.yml
 ├── inventories/<env>/                # hosts.yaml; group_vars/all/ with the four files below
 ├── roles/
@@ -103,14 +103,14 @@ rackmarshal-infrastructure/
 `tier`, `id` (26-character base32 from the ceremony), `caBundle` (public roots only; two during root
 rotation), and `overrides`. `secrets.yaml` holds secret-manager references only. `artifacts.yaml` is
 described below, and `deployment.yaml` selects targets. Services may differ — for example
-`rackmarshal-gateway` as a package on edge hosts and the rest in a cluster:
+`gateway` as a package on edge hosts and the rest in a cluster:
 
 ```yaml
 forge_deployment:
   defaultTarget: kubernetes          # kubernetes | podman | docker | package | windows
   defaultReplicas: 2                 # every service is replica-safe; see CONVENTIONS
   services:
-    rackmarshal-gateway: { target: package, hosts: gateway, replicas: 3 }
+    gateway: { target: package, hosts: gateway, replicas: 3 }
   clusters:
     - id: east-1                     # lowercase DNS label
       namespace: rackmarshal-qa-east
@@ -126,8 +126,15 @@ the rolling upgrade below non-disruptive; 1 is valid and means accepting a resta
 `kubernetes` the value sets the chart's `replicaCount` and a `PodDisruptionBudget` of `replicas - 1`,
 so a drain cannot take the last one; on `package` and `windows` it is the number of hosts in the group.
 
+Every rendered Kubernetes object carries the recommended labels
+([CONVENTIONS](CONVENTIONS.md#deployment-artifacts)): `app.kubernetes.io/part-of: rackmarshal` names the
+application and `app.kubernetes.io/name` and `/component` name the component, so a namespace shared with
+other software can still be selected, drained, or dashboards-filtered by product or by service. The
+labels mirror `service.namespace` and `service.name` in telemetry, so a Kubernetes selector and a
+Loki or metrics query use the same two names.
+
 Every service ships logs, traces, and metrics over OTLP to `telemetry.endpoint`
-([0004](0004-rackmarshal-common.md)), so each environment needs one OTLP receiver reachable from every
+([0004](0004-common.md)), so each environment needs one OTLP receiver reachable from every
 target. `forge_telemetry` renders that endpoint and its CA bundle into every service's configuration.
 An OpenTelemetry Collector is the expected deployment, with Loki behind it for logs; Loki's own
 `/otlp/v1/logs` endpoint is a valid target for a small environment that wants no collector. 0004 names
@@ -135,9 +142,11 @@ which resource attributes may become Loki stream labels, and `service.instance.i
 `replicas` above makes the instance count a deployment choice, so as a label it would create a Loki
 stream per instance per restart.
 
-`forge_identity` renders `clusters` into `rackmarshal-identity`'s cluster issuer registry
-([0006](0006-rackmarshal-identity.md)), mapping service account `<namespace>/rackmarshal-<name>` to
-`spiffe://<environment-id>/service/rackmarshal-<name>`.
+`forge_identity` renders `clusters` into `identity`'s cluster issuer registry
+([0006](0006-identity.md)), mapping service account `<namespace>/rackmarshal-<name>` to
+`spiffe://<environment-id>/service/<name>`. The Kubernetes object keeps the prefix because it shares a
+namespace with whatever else is deployed there; the SPIFFE path does not, because the environment's
+trust domain already scopes it.
 
 #### Consuming service artifacts
 
@@ -198,14 +207,14 @@ on role and playbook YAML; the rest run on rendered output. Initial rule set (pr
 | inventory  | `name` DNS label, `tier` one of four, `id` 26 base32 characters; one ID per inventory      |
 | inventory  | every service resolves to a known target; `kubernetes` services name a listed cluster      |
 | inventory  | cluster `jwks` fingerprints match the environment's ceremony record                        |
-| inventory  | `rackmarshal-identity` and PostgreSQL never bind public interfaces or public load balancers     |
+| inventory  | `identity` and PostgreSQL never bind public interfaces or public load balancers     |
 | inventory  | images pinned by `@sha256:`; charts, packages, installers by SHA-256; `schemaVersion` never drops |
 | inventory  | `production`: no `kek-sealed` or other last-resort feature without an override            |
 | inventory  | service token TTL ≤ 1h; service certificates exactly 7 days; secrets are references only  |
 | content    | secret-using tasks set `no_log`; `shell` has `changed_when`; no `validate_certs: false`     |
 | kubernetes | all containers non-root, read-only root, no escalation, drop `ALL`, `RuntimeDefault` seccomp |
 | kubernetes | no host namespaces or `hostPath`; `NetworkPolicy` present; no Role, RoleBinding, or Secret |
-| kubernetes | `automountServiceAccountToken: false`; one projected token, audience `spiffe://<id>/service/rackmarshal-identity`, 600 s, init container only |
+| kubernetes | `automountServiceAccountToken: false`; one projected token, audience `spiffe://<id>/service/identity`, 600 s, init container only |
 | kubernetes | key volume is `emptyDir` `medium: Memory`; init and main containers use the same digest     |
 | compose    | non-root `user`, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, no host network      |
 | quadlet    | non-root `User=`, `ReadOnly=true`, `NoNewPrivileges=true`, `DropCapability=all`, no `AutoUpdate=` |
@@ -244,7 +253,7 @@ across a `schemaVersion` change. Otherwise rollback is a reverted commit applied
 ### Dependencies
 
 - **Rackmarshal repositories** — each service's deployment artifacts (CONVENTIONS); enrollment, renewal,
-  and the cluster issuer registry from [0006](0006-rackmarshal-identity.md). No Go modules.
+  and the cluster issuer registry from [0006](0006-identity.md). No Go modules.
 - **Runtime** — a Kubernetes namespace, Podman, Docker Engine with Compose, systemd, or Windows Server;
   PostgreSQL from distribution packages or a managed service; an OpenTelemetry Collector pinned by digest.
 - **Secret manager** — one per environment, reached only from the control node (proposed: HashiCorp
@@ -270,12 +279,12 @@ Performed by two people on an offline, freshly imaged workstation, with a writte
    the trust domain. Go matches URI name constraints against the URI host
    ([`constraints.go`](https://github.com/golang/go/blob/master/src/crypto/x509/constraints.go)),
    which for a SPIFFE ID is the environment ID.
-3. **Sign `rackmarshal-identity`'s intermediate** from a CSR whose key was generated inside the environment's
-   HSM or KMS ([0006](0006-rackmarshal-identity.md)): path length 0, same name constraint, 2-year validity,
+3. **Sign `identity`'s intermediate** from a CSR whose key was generated inside the environment's
+   HSM or KMS ([0006](0006-identity.md)): path length 0, same name constraint, 2-year validity,
    renewed by a repeat ceremony at two-thirds of its lifetime.
 4. **Sign the control node's bootstrap certificate** from a CSR generated on the control node:
    `spiffe://<environment-id>/control-node/<node-name>`, client authentication only, 30 days. After
-   `rackmarshal-identity` is running, the control node renews through 0006's renewal endpoint like a service.
+   `identity` is running, the control node renews through 0006's renewal endpoint like a service.
 5. **Register Kubernetes cluster issuers** — for each listed cluster, one person exports the issuer URL
    and the JWKS from `/openid/v1/jwks`
    ([issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery))
@@ -290,14 +299,14 @@ use the KEK-sealed intermediate store, gated as in 0006.
 
 #### Service certificate bootstrap
 
-`rackmarshal-identity` issues its own service certificate from the intermediate on every target (0001). Every
-other service enrolls with a CSR through `rackmarshal-sdk` `pkg/enroll` ([0003](0003-rackmarshal-sdk.md)), keeps an
+`identity` issues its own service certificate from the intermediate on every target (0001). Every
+other service enrolls with a CSR through `sdk` `pkg/enroll` ([0003](0003-sdk.md)), keeps an
 ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OCSP and CRL checks.
 
 **Containers and operating systems** (`podman`, `docker`, `package`, `windows`):
 
 1. If the instance's certificate has less than a third of its lifetime left, or none exists, the control
-   node calls `rackmarshal-identity` over mutual TLS with its control-node certificate for a service enrollment
+   node calls `identity` over mutual TLS with its control-node certificate for a service enrollment
    token for `service/<repository>` and this host, TTL 15 minutes.
 2. The token is written with `no_log: true` and read through `certificate.enrollmentTokenFile`: a Podman
    secret (`Secret=`); a file on the host's `/run` tmpfs mounted as a Compose secret
@@ -312,12 +321,12 @@ ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OC
 
 1. Each service has its own ServiceAccount, and pods set `automountServiceAccountToken: false`; services
    never call the Kubernetes API.
-2. A projected `serviceAccountToken` with audience `spiffe://<environment-id>/service/rackmarshal-identity` and
+2. A projected `serviceAccountToken` with audience `spiffe://<environment-id>/service/identity` and
    `expirationSeconds: 600`, the minimum
    ([projected volumes](https://kubernetes.io/docs/concepts/storage/projected-volumes/)), mounts only into
    an enrollment init container that runs the service's own image as non-root with a read-only root.
-3. The init container verifies `rackmarshal-identity` against `environment.caBundle` and its SPIFFE ID, then
-   sends a CSR with the token from `certificate.serviceAccountTokenFile`. `rackmarshal-identity` verifies it
+3. The init container verifies `identity` against `environment.caBundle` and its SPIFFE ID, then
+   sends a CSR with the token from `certificate.serviceAccountTokenFile`. `identity` verifies it
    offline against the registered issuer and JWKS, checks audience and maximum age, allows one enrollment
    per token ID, and enrolls only the service account mapped to that service (0006).
 4. Key and certificate go to an `emptyDir` with `medium: Memory`, a tmpfs shared with the main container
@@ -378,7 +387,7 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
 - **Policy** — `opa test` with passing and failing fixtures for every rule, and golden rendered output
   per target for a reference inventory.
 - **Kubernetes** — kind v0.33.0 (`kindest/node:v1.37.0`) in pull-request CI: install every chart, enroll
-  against a SoftHSM-backed `rackmarshal-identity`, reschedule pods, and reject replayed, wrong-audience, and
+  against a SoftHSM-backed `identity`, reschedule pods, and reject replayed, wrong-audience, and
   other-service tokens. Nightly: k3s on `ubuntu-24.04-arm` and kind 1.35 and 1.36 node images
   ([kind v0.33.0](https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0)).
 - **Hosts** — Molecule scenarios for `podman`, `docker`, and `package` in systemd-capable containers per
@@ -395,7 +404,7 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
 - **Podman Quadlet only** (previous draft) — simpler, but Kubernetes is now mandatory.
 - **Control-node token delivery on Kubernetes** — one enrollment path, but scaled or rescheduled pods
   would wait for an Ansible run.
-- **`TokenReview` from `rackmarshal-identity`** — sees deleted pods, but needs credentials and a network path
+- **`TokenReview` from `identity`** — sees deleted pods, but needs credentials and a network path
   to every cluster API server, and enrollment fails when one is down.
 - **SPIRE Kubernetes attestation** — mature, but 0001 uses SPIFFE IDs without running SPIRE.
 - **Quadlet and Compose in service repositories** — closer to the code, but outside this CI's gate.
@@ -413,7 +422,7 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
   separate per-environment infrastructure CA held by the secret manager, never trusted for Rackmarshal mutual
   TLS (see also 0004). Is PostgreSQL for Kubernetes targets managed or host-based only (proposed)?
 - **Enrollment keys** — should `certificate.dir`, `enrollmentTokenFile`, and `serviceAccountTokenFile`
-  ([0008](0008-rackmarshal-gateway.md)) become CONVENTIONS keys for every service?
+  ([0008](0008-gateway.md)) become CONVENTIONS keys for every service?
 - **Managed clusters** — do providers rotate signing keys often enough that pinned JWKS is impractical
   and 0006's discovery mode becomes the norm (unverified)?
 - **Pod deletion** — offline verification cannot see a deleted pod, whose certificate stays valid for up
@@ -427,8 +436,8 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
 
 ## References
 
-- [0001](0001-project-repositories.md), [0003](0003-rackmarshal-sdk.md), [0004](0004-rackmarshal-common.md),
-  [0006](0006-rackmarshal-identity.md), [0008](0008-rackmarshal-gateway.md), [0009](0009-rackmarshal-inventory.md),
+- [0001](0001-project-repositories.md), [0003](0003-sdk.md), [0004](0004-common.md),
+  [0006](0006-identity.md), [0008](0008-gateway.md), [0009](0009-inventory.md),
   [CONVENTIONS.md](CONVENTIONS.md); versions from the release pages under Pinned toolchain.
 - Ansible [docs](https://docs.ansible.com/) and
   [Windows SSH](https://docs.ansible.com/ansible/latest/os_guide/windows_ssh.html);

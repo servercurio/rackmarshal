@@ -7,11 +7,11 @@
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-16
-- **Summary:** Rackmarshal gains three browser surfaces — the existing `rackmarshal-sso` login site, a new
-  `rackmarshal-portal` for tenant users, and a new `rackmarshal-console` for platform administrators — built as
+- **Summary:** Rackmarshal gains three browser surfaces — the existing `sso` login site, a new
+  `portal` for tenant users, and a new `console` for platform administrators — built as
   server-rendered templ applications enhanced with htmx and Alpine on one design system. Browsers never
   hold a Rackmarshal API token: each surface is an OIDC relying party that keeps tokens server-side and calls
-  the gateway itself, which is what lets the gateway keep CORS off. `rackmarshal-cli` gains a loopback
+  the gateway itself, which is what lets the gateway keep CORS off. `cli` gains a loopback
   callback server so it can log in through the same authorization code flow.
 
 > An initial draft with concrete proposals, bounded by the
@@ -22,8 +22,8 @@
 ## Context & goals
 
 0001 enumerates fifteen repositories and none of them renders a page for a human, beyond the login site
-0007 gives `rackmarshal-sso`. Everything an operator does today goes through `rackmarshal-cli`
-([0010](0010-rackmarshal-cli.md)), and 0007 makes operator administration pages an explicit non-goal for the
+0007 gives `sso`. Everything an operator does today goes through `cli`
+([0010](0010-cli.md)), and 0007 makes operator administration pages an explicit non-goal for the
 SSO service. Two loose ends in the existing set point at this document: 0008 asks outright whether "a
 web console [will] need CORS on the operator ingress", and turns CORS and CSRF middleware off on the
 grounds that "no browser origin calls the gateway"; and 0010's device authorization grant "needs a
@@ -40,15 +40,15 @@ This document adds the surfaces, fixes the stack they share, and answers both qu
   0008 survives unchanged.
 - Keep 0007's guarantee that login works without JavaScript except for WebAuthn, and extend WCAG 2.2 AA
   to the new surfaces.
-- Give `rackmarshal-cli` a login that works where the device grant is awkward, without a second token type.
+- Give `cli` a login that works where the device grant is awkward, without a second token type.
 - Work in air-gapped installations, which rules out loading anything from a public CDN at runtime.
 
 **Non-goals**
 
-- The page inventory of each surface — [0017](0017-rackmarshal-portal.md) and [0018](0018-rackmarshal-console.md).
+- The page inventory of each surface — [0017](0017-portal.md) and [0018](0018-console.md).
 - The visual identity itself: palette, type, tokens, and mark usage are [0019](0019-brand-identity.md).
 - A published component library. Extraction is deferred; see Open questions.
-- Replacing `rackmarshal-cli`. The CLI stays the complete operator interface; the portals are additive.
+- Replacing `cli`. The CLI stays the complete operator interface; the portals are additive.
 
 ## Proposal
 
@@ -56,13 +56,13 @@ This document adds the surfaces, fixes the stack they share, and answers both qu
 
 | Surface         | Audience                        | Authentication                | Repository       |
 |-----------------|---------------------------------|-------------------------------|------------------|
-| Login site      | Anonymous, pre-authentication   | Renders `rackmarshal-identity` challenges | `rackmarshal-sso` (0007) |
-| `rackmarshal-portal`  | Tenant users and tenant admins  | OIDC relying party            | New              |
-| `rackmarshal-console` | Platform administrators         | OIDC relying party, step-up   | New              |
+| Login site      | Anonymous, pre-authentication   | Renders `identity` challenges | `sso` (0007) |
+| `portal`  | Tenant users and tenant admins  | OIDC relying party            | New              |
+| `console` | Platform administrators         | OIDC relying party, step-up   | New              |
 
-The split follows 0007's own reasoning. `rackmarshal-sso` is hardened as the only surface anonymous browsers
-reach; putting authenticated administration in the same process would undo that. `rackmarshal-portal` and
-`rackmarshal-console` are separated from each other for the same reason at a different level: the console
+The split follows 0007's own reasoning. `sso` is hardened as the only surface anonymous browsers
+reach; putting authenticated administration in the same process would undo that. `portal` and
+`console` are separated from each other for the same reason at a different level: the console
 administers the whole deployment — tenants, environments, certificate authorities, agent enrollment —
 while the portal serves one tenant's users. A defect in the tenant-facing application should not sit in
 the same address space as the controls that issue enrollment tokens.
@@ -101,26 +101,26 @@ there. Self-hosting also removes the third-party origins a CSP would otherwise h
 #### How a page reaches the API
 
 ```
-browser ──TLS──► rackmarshal-portal ──mTLS + Bearer──► rackmarshal-gateway ──► rackmarshal-inventory, …
+browser ──TLS──► portal ──mTLS + Bearer──► gateway ──► inventory, …
    │                  │
    │                  └── session cookie ⇄ server-side session: access + refresh token
    └── holds a session cookie only; never a Rackmarshal API token
 ```
 
 The browser talks only to the portal or console origin. That process holds the user's tokens, calls the
-gateway through `rackmarshal-sdk` exactly as `rackmarshal-cli` does, and returns HTML. Three things follow:
+gateway through `sdk` exactly as `cli` does, and returns HTML. Three things follow:
 
 - **0008's CORS question resolves to "no".** No browser origin calls the gateway, so CORS and CSRF
   middleware stay off there and 0008's Open question can be struck. The portals are ordinary `operator`
   audience clients of the gateway.
 - **No token storage problem in the browser.** There is no access token in `localStorage`, no refresh
   token in JavaScript reach, and no silent-renewal iframe.
-- **`rackmarshal-sdk` stays the only client.** The portals add no second way to call Rackmarshal, so the
+- **`sdk` stays the only client.** The portals add no second way to call Rackmarshal, so the
   CONVENTIONS rule that API calls go through the generated client holds here too.
 
 #### Browser session
 
-Each surface is an OIDC relying party of `rackmarshal-identity`, using the authorization code flow with PKCE
+Each surface is an OIDC relying party of `identity`, using the authorization code flow with PKCE
 ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) against the endpoints 0006 owns at
 `/identity/oidc/<environment-id>/`.
 
@@ -138,7 +138,7 @@ host in the same registrable domain cannot set a cookie the portal will accept
 rather than `Strict` so that following a link from a notification lands the user in a logged-in page;
 every state-changing request carries a CSRF token regardless.
 
-#### `rackmarshal-cli` login through a loopback callback
+#### `cli` login through a loopback callback
 
 0010 keeps the device authorization grant, which works over SSH but requires the operator to carry a
 code to another machine. This document adds a second method for the case where a browser is available on
@@ -149,7 +149,7 @@ the same machine, using the same authorization code flow the portals use:
 2. It opens the system browser at `/identity/oidc/<environment-id>/authorize` with
    `redirect_uri=http://127.0.0.1:<port>/callback`, printing the URL for the operator to paste if no
    browser opens.
-3. `rackmarshal-sso` renders login as it does for any other client (0007). Nothing about the flow is
+3. `sso` renders login as it does for any other client (0007). Nothing about the flow is
    CLI-specific.
 4. The callback lands on the loopback listener, which checks `state`, exchanges the code with the PKCE
    verifier, stores credentials as 0010 already specifies, and renders a plain confirmation page served
@@ -184,11 +184,11 @@ Per CONVENTIONS, every direct dependency is justified with what it pulls in.
 - **`github.com/labstack/echo/v4`** — already the HTTP server in `go-echo-starter` and in 0006–0009.
 - **`github.com/gorilla/csrf`** — double-submit CSRF tokens. Alternative considered: Echo's own CSRF
   middleware, which is already present; the decision is recorded under Alternatives.
-- **`rackmarshal-sdk`** — the only API client, with `pkg/enroll` for the service certificate and
+- **`sdk`** — the only API client, with `pkg/enroll` for the service certificate and
   `pkg/tlsconfig` for the gateway connection.
-- **`rackmarshal-common`** — logging and telemetry, as every Rackmarshal Go repository does.
+- **`common`** — logging and telemetry, as every Rackmarshal Go repository does.
 - **An OIDC relying-party library** — open question; `coreos/go-oidc` pulls `go-jose`, which is a larger
-  graph than the flow needs. A hand-written code-exchange client over `rackmarshal-sdk`'s pinned HTTP client is
+  graph than the flow needs. A hand-written code-exchange client over `sdk`'s pinned HTTP client is
   the alternative, since discovery and JWKS handling are the only parts that carry real complexity.
 
 Front-end assets are vendored, not fetched: `htmx.min.js`, `alpine.csp.min.js`, the compiled stylesheet,
@@ -252,11 +252,11 @@ environment a destructive control belongs to.
 
 ### Logging & telemetry
 
-Through `rackmarshal-common`, per CONVENTIONS. Page handlers emit `http.route`, `http.response.status_code`,
+Through `common`, per CONVENTIONS. Page handlers emit `http.route`, `http.response.status_code`,
 and `rackmarshal.tenant.id`; htmx requests additionally carry `rackmarshal.web.partial` with the fragment name, so a
 swap can be distinguished from a full render in a trace. Session identifiers, tokens, CSRF tokens, and
 `state` values are never logged. Spans propagate to the gateway through W3C Trace Context, so a slow
-table in the portal resolves to the `rackmarshal-inventory` query behind it.
+table in the portal resolves to the `inventory` query behind it.
 
 ### Configuration
 
@@ -282,7 +282,7 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
   so the binary serves them without a filesystem dependency, matching how 0006–0009 embed their
   contracts.
 - **Artifacts** — the deployment set CONVENTIONS lists: OCI image, Helm chart, deb/rpm, and an NSIS
-  installer. Neither surface needs cgo, so both cross-compile normally, unlike `rackmarshal-identity`.
+  installer. Neither surface needs cgo, so both cross-compile normally, unlike `identity`.
 - **Versioning** — `v0.x` from Conventional Commits, as everywhere else.
 
 ### Testing
@@ -306,7 +306,7 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
 - **One repository for both portals, RBAC-gated** — cheaper to build and deploy, and genuinely tempting.
   Rejected because the console issues enrollment tokens and approves service enrollments; those controls
   should not share a process with the tenant-facing application.
-- **Folding the portals into `rackmarshal-gateway`** — would avoid two new services, but the gateway is an
+- **Folding the portals into `gateway`** — would avoid two new services, but the gateway is an
   authorization enforcement point whose value depends on being small.
 - **Echo's built-in CSRF middleware** — one less dependency. `gorilla/csrf` is proposed instead for its
   explicit `__Host-` handling and per-form token rotation; this is a weak preference and either is
@@ -320,13 +320,13 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
 ## Open questions
 
 - **Shared components** — the portal and console will duplicate a dashboard shell, a table, and a form
-  set. Extract them into a `rackmarshal-web-kit` library once the duplication is real, or accept it for two
+  set. Extract them into a `web-kit` library once the duplication is real, or accept it for two
   consumers? Extraction adds a sixteenth repository.
 - **OIDC relying-party library** — `coreos/go-oidc` and its `go-jose` graph, or a hand-written exchange
-  over `rackmarshal-sdk`'s HTTP client with a small JWKS cache?
+  over `sdk`'s HTTP client with a small JWKS cache?
 - **Session store ownership** — PostgreSQL reuses existing conventions, but it gives the portal and
-  console a database they otherwise would not have. `rackmarshal-sso` already keeps its sessions in
-  `rackmarshal-identity` and holds no database of its own (0007); the portals could do the same and stay
+  console a database they otherwise would not have. `sso` already keeps its sessions in
+  `identity` and holds no database of its own (0007); the portals could do the same and stay
   storage-free. That trades a database for a dependency on identity's availability for every page
   render, which is why it is not proposed outright.
 - **Console step-up scope** — which operations require re-authentication, beyond the three named above?

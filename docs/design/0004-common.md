@@ -2,12 +2,12 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0004 — rackmarshal-common
+# 0004 — common
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
-- **Summary:** `rackmarshal-common` gives every Rackmarshal Go executable the same logging, environment handling, and
+- **Summary:** `common` gives every Rackmarshal Go executable the same logging, environment handling, and
   telemetry. It provides a zerolog wrapper with trace correlation and service and environment fields, an
   `environment` package for the four tiers, and OpenTelemetry setup whose Rackmarshal-built OTLP/HTTP exporter
   sends traces and metrics without linking gRPC.
@@ -19,12 +19,12 @@
 ## Context & goals
 
 0001 settles the stack in
-[Logging and telemetry](0001-project-repositories.md#logging-and-telemetry-rackmarshal-common). The library wraps
+[Logging and telemetry](0001-project-repositories.md#logging-and-telemetry-common). The library wraps
 the starters' zerolog `logging` package and correlates logs with traces through a zerolog hook. Traces and
 metrics use the OpenTelemetry API and SDK, exported by a permanent Rackmarshal-built OTLP/HTTP exporter on
 `go.opentelemetry.io/proto/slim/otlp`. Every log event and telemetry resource carries the environment
 name ([Environment awareness](0001-project-repositories.md#environment-awareness)). During bootstrap,
-every Go repository replaces its starter's logging and telemetry with `rackmarshal-common`, while config
+every Go repository replaces its starter's logging and telemetry with `common`, while config
 loading and middleware stay in the starters
 ([Bootstrapping](0001-project-repositories.md#bootstrapping-a-repository-from-a-starter)).
 
@@ -46,8 +46,8 @@ The starters' logging differs by template:
 
 - Config file loading and web-framework middleware, which stay in the starters (0001).
 - Exporting logs over OTLP; logs stay on stdout (see Open questions).
-- Certificates, SPIFFE IDs, and TLS configuration — [0003](0003-rackmarshal-sdk.md).
-- Collector deployment and telemetry backends — [0005](0005-rackmarshal-infrastructure.md).
+- Certificates, SPIFFE IDs, and TLS configuration — [0003](0003-sdk.md).
+- Collector deployment and telemetry backends — [0005](0005-infrastructure.md).
 
 ## Proposal
 
@@ -66,7 +66,7 @@ The starters' logging differs by template:
 #### Package layout
 
 ```
-rackmarshal-common/
+common/
 ├── pkg/
 │   ├── environment/          # Tier, Config, Validate, Hardened, AllowLastResort
 │   ├── service/              # Info{Name, Version, InstanceID}, NewInstanceID
@@ -87,11 +87,11 @@ rackmarshal-common/
 ```go
 // After the starter's Configure(): defaults → file → RACKMARSHAL_INVENTORY_* → flags.
 if err := cfg.Environment.Validate(); err != nil { return err } // name and known tier required
-svc := service.Info{Name: "rackmarshal-inventory", Version: version.Number(), InstanceID: service.NewInstanceID()}
+svc := service.Info{Name: "inventory", Version: version.Number(), InstanceID: service.NewInstanceID()}
 logging.Initialize(cfg.Logging, cfg.Environment, svc)
 
 shutdown, err := telemetry.Setup(ctx, cfg.Telemetry, cfg.Environment, svc,
-    telemetry.WithClientTLS(certs.ClientTLSConfig)) // e.g. built with rackmarshal-sdk's tlsconfig
+    telemetry.WithClientTLS(certs.ClientTLSConfig)) // e.g. built with sdk's tlsconfig
 if err != nil { return err }
 defer shutdown(context.Background())
 
@@ -124,11 +124,11 @@ func (c *Config) AllowLastResort(feature string, log *zerolog.Logger) error
 - **Required values** — `Validate` has no defaults: a missing name or tier, or an unknown tier, fails
   startup.
 - **Trust domain** — `RequireIdentity` checks only that the values are present. Matching the ID against
-  the roots' trust domain happens in `rackmarshal-sdk`'s `tlsconfig`, so SPIFFE parsing exists once.
+  the roots' trust domain happens in `sdk`'s `tlsconfig`, so SPIFFE parsing exists once.
 - **Last-resort gate** — `AllowLastResort` returns an error in `production` unless `feature` is in
   `Overrides`. Every use in `production` is logged at `warn`, and at `info` in other tiers, with
   `rackmarshal.override.feature`. Feature names are kebab-case and owned by their documents, such as
-  `kek-sealed-ca-store` in [0006](0006-rackmarshal-identity.md).
+  `kek-sealed-ca-store` in [0006](0006-identity.md).
 
 #### `logging`
 
@@ -156,8 +156,10 @@ func (c *Config) AllowLastResort(feature string, log *zerolog.Logger) error
   every event carries the time of `Initialize`. A test run on 2026-09-15 confirmed this, and the fix
   should also go upstream to the starters.
 - **Fields** — zerolog's field-name globals are pinned to `time`, `level`, `message`, and `error`. Every
-  event also carries `service.name`, `service.version`, `service.instance.id`,
-  `deployment.environment.name`, `rackmarshal.environment.tier`, and `rackmarshal.environment.id` when set.
+  event also carries `service.namespace` (always `rackmarshal`), `service.name` (the bare component, e.g.
+  `gateway`), `service.version`, `service.instance.id`, `deployment.environment.name`,
+  `rackmarshal.environment.tier`, and `rackmarshal.environment.id` when set. `service.Info` carries
+  `Namespace` alongside `Name` so no caller assembles the pair by hand.
 - **Trace correlation** — `TraceHook` implements [`zerolog.Hook`](https://pkg.go.dev/github.com/rs/zerolog#Hook).
   For events logged with `Event.Ctx(ctx)`, it reads the span context from `Event.GetCtx()` and adds
   `trace_id`, `span_id`, and `trace_flags` in lowercase hex, following
@@ -194,7 +196,7 @@ Moving from the starters, including OpenTelemetry
 [HTTP attribute](https://opentelemetry.io/docs/specs/semconv/registry/attributes/http/) names for access
 logs:
 
-| Starter                                              | `rackmarshal-common`                                     |
+| Starter                                              | `common`                                     |
 |------------------------------------------------------|----------------------------------------------------|
 | `logging.Daemon`                                     | `logging.Default`                                  |
 | `<PREFIX>_DAEMON_LOG_*`, `<PREFIX>_HTTP_ACCESS_LOG_*` | `<PREFIX>_LOG_*`, `<PREFIX>_ACCESS_LOG_*`         |
@@ -204,8 +206,9 @@ logs:
 
 #### `telemetry`
 
-- **`Setup`** builds a resource with the same `service.*`, `deployment.environment.name`, and
-  `rackmarshal.environment.*` attributes. It then creates a `TracerProvider` with a batch span processor and
+- **`Setup`** builds a resource with the same `service.*` (including `service.namespace`),
+  `deployment.environment.name`, and `rackmarshal.environment.*` attributes, so logs, traces, and metrics
+  all group by product and by component without a backend-side mapping rule. It then creates a `TracerProvider` with a batch span processor and
   `ParentBased(TraceIDRatioBased(ratio))` sampling, a `MeterProvider` with a periodic reader, a
   `LoggerProvider` with a batch processor feeding `logging/otlpsink`, and the global W3C
   `propagation.TraceContext` propagator. All four share one resource, so a log record, its span, and the
@@ -214,7 +217,7 @@ logs:
   rate-limited. When disabled, `Setup` installs no-op providers but keeps the propagator.
 - **Standard variables** — `OTEL_*` variables are not read; configuration has one path.
 - **Wrappers** — `WrapTransport(http.RoundTripper)` injects `traceparent` and records client spans, for
-  `rackmarshal-sdk`'s `WithTransportWrapper`. `WrapHandler(http.Handler, ...Option)` extracts the incoming
+  `sdk`'s `WithTransportWrapper`. `WrapHandler(http.Handler, ...Option)` extracts the incoming
   context, records server spans, and records the `http.server.request.duration` histogram. Services
   adapt it to Echo in their own middleware.
 - **Incoming traces** — `WithTrustIncoming(false)`, the default for public ingress, starts a new trace
@@ -261,7 +264,7 @@ operator should configure:
 
 | Attribute | Placement | Why |
 |-----------|-----------|-----|
-| `service.name`, `service.version` | label | Bounded by the number of Rackmarshal services and releases |
+| `service.namespace`, `service.name`, `service.version` | label | Bounded by the number of Rackmarshal services and releases; `namespace` is what selects the whole product |
 | `deployment.environment.name`, `rackmarshal.environment.tier` | label | One value per environment |
 | `service.instance.id` | **structured metadata** | One value per replica per restart; as a label it makes a stream per pod, and 0005 sets replica count per environment |
 | `rackmarshal.tenant.id`, `rackmarshal.agent.id`, `rackmarshal.request.id` | **structured metadata** | Unbounded by design — a label here is a stream per tenant, per agent, or per request |
@@ -272,7 +275,7 @@ one, which is the only entry an operator has to think about.
 
 ### Dependencies
 
-- **Rackmarshal repositories** — none. Consumed by every Rackmarshal Go executable and by `rackmarshal-sdk`'s examples.
+- **Rackmarshal repositories** — none. Consumed by every Rackmarshal Go executable and by `sdk`'s examples.
 - **Third-party modules** — re-measured on 2026-09-20 with a throwaway module adding the log signal to
   the previous set: zerolog v1.35.1, the OpenTelemetry API, SDK, and metric SDK v1.46.0, the log API and
   log SDK v0.22.0, and `proto/slim/otlp` v1.11.0, plus a protobuf marshal and a `net/http` POST. It
@@ -311,7 +314,7 @@ visible in the metric, and the console sink is unaffected, so nothing is lost si
 
 - **No secrets in telemetry.** Resource attributes and default fields hold no credentials. Collector
   headers come from `headersFile` and are never logged. Values marked `x-rackmarshal-sensitive`
-  ([0002](0002-rackmarshal-api-schema.md)) are never logged.
+  ([0002](0002-api-schema.md)) are never logged.
 - **TLS for telemetry.** A plaintext `http://` endpoint is a last-resort feature (`plaintext-telemetry`):
   refused in `production` without an override, and warned in `staging`.
 - **Bounded input.** Incoming `traceparent` values at public ingress start new traces, exporter
@@ -410,7 +413,7 @@ the loop cannot form.
   starters' config validation and dump.
 - **Reverse-domain attribute prefix** (`com.servercurio.rackmarshal.*`) — what the semantic-convention
   [naming guidance](https://opentelemetry.io/docs/specs/semconv/general/naming/) recommends, but verbose.
-- **`environment` in each repository or in `rackmarshal-sdk`** — duplicates tier logic, or mixes
+- **`environment` in each repository or in `sdk`** — duplicates tier logic, or mixes
   configuration into the security library.
 
 ## Open questions
@@ -419,7 +422,7 @@ the loop cannot form.
   telemetry?
 - **Attribute prefix** — `rackmarshal.*` or `com.servercurio.rackmarshal.*`?
 - **Sampling** — are the default ratios right, and is tail sampling at the collector in scope for
-  [0005](0005-rackmarshal-infrastructure.md)?
+  [0005](0005-infrastructure.md)?
 - **Collector identity** — does the in-environment collector hold a Rackmarshal certificate, and under which
   SPIFFE path, given that `/service/<repository>` names only Rackmarshal repositories?
 - **Temporality** — cumulative (proposed) or delta?
@@ -434,7 +437,7 @@ the loop cannot form.
 
 - [0001 — Project Repositories](0001-project-repositories.md) — telemetry stack, environment awareness,
   bootstrap procedure.
-- [0003 — rackmarshal-sdk](0003-rackmarshal-sdk.md) — TLS configuration and the transport wrapper hook.
+- [0003 — sdk](0003-sdk.md) — TLS configuration and the transport wrapper hook.
 - [CONVENTIONS.md](CONVENTIONS.md) — log fields, attribute names, environment keys.
 - [zerolog](https://github.com/rs/zerolog) — [`Hook`](https://pkg.go.dev/github.com/rs/zerolog#Hook),
   `Event.Ctx`, `Event.GetCtx`.
