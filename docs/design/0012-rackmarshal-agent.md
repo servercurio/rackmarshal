@@ -420,6 +420,13 @@ Through `rackmarshal-common` in both processes, with `rackmarshal.agent.id`, `ra
 `rackmarshal.agent.resources.drifted`, `rackmarshal.agent.plugin.restarts`, and `rackmarshal.agent.outbox.dropped`.
 Telemetry export runs only from `serve`; the executor writes its metrics to the outbox.
 
+The OTLP log sink ([0004](0004-rackmarshal-common.md)) is **off by default on the agent**, unlike the
+services. An endpoint is where the network is least likely to reach a collector — that is the point of
+managing it — and an agent that retried log export against an unreachable endpoint would spend its
+outbox budget on its own telemetry. The console sink writes logfmt to stderr, which journald on Linux
+and the Event Log on Windows already collect, and `log.otlp.enabled` turns the sink on where a
+collector is in fact reachable. The executor is unchanged: it writes to the outbox, and `serve` ships.
+
 ### Configuration
 
 Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_*` per 0003.

@@ -126,6 +126,15 @@ the rolling upgrade below non-disruptive; 1 is valid and means accepting a resta
 `kubernetes` the value sets the chart's `replicaCount` and a `PodDisruptionBudget` of `replicas - 1`,
 so a drain cannot take the last one; on `package` and `windows` it is the number of hosts in the group.
 
+Every service ships logs, traces, and metrics over OTLP to `telemetry.endpoint`
+([0004](0004-rackmarshal-common.md)), so each environment needs one OTLP receiver reachable from every
+target. `forge_telemetry` renders that endpoint and its CA bundle into every service's configuration.
+An OpenTelemetry Collector is the expected deployment, with Loki behind it for logs; Loki's own
+`/otlp/v1/logs` endpoint is a valid target for a small environment that wants no collector. 0004 names
+which resource attributes may become Loki stream labels, and `service.instance.id` must not be one:
+`replicas` above makes the instance count a deployment choice, so as a label it would create a Loki
+stream per instance per restart.
+
 `forge_identity` renders `clusters` into `rackmarshal-identity`'s cluster issuer registry
 ([0006](0006-rackmarshal-identity.md)), mapping service account `<namespace>/rackmarshal-<name>` to
 `spiffe://<environment-id>/service/rackmarshal-<name>`.
