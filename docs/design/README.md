@@ -31,6 +31,7 @@ alternatives considered, and tracks its status as the decision matures.
 | [0018](0018-rackmarshal-console.md)          | rackmarshal-console          | Draft  | 2026-09-16 |
 | [0019](0019-brand-identity.md)         | Brand identity         | Draft  | 2026-09-16 |
 | [0020](0020-desired-state-kinds.md)    | Desired-state kinds    | Draft  | 2026-09-18 |
+| [0021](0021-plugin-extensibility.md)   | Plugin extensibility   | Draft  | 2026-09-20 |
 
 ## Statuses
 
