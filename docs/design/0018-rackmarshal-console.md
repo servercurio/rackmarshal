@@ -77,7 +77,7 @@ wrong, and acts — which is the shape a page serves better than a command.
 | `/agents`                   | Agents across every tenant, last report, certificate expiry       | no      |
 | `/agents/enrollment-tokens` | Issue, list, revoke                                               | yes     |
 | `/plugins/publishers`       | `PluginPublisher` records and their verification identities       | yes     |
-| `/plugins/imports`          | Verified `AgentPlugin` imports, digests, Rekor log entries        | no      |
+| `/plugins/imports`          | Verified `Plugin` imports, digests, bundles, Rekor log entries    | no      |
 | `/plugins/core-key`         | Current core key ID, embedded keys, revocation list               | yes     |
 | `/audit`                    | The event chain, filtered by actor, action, target, outcome       | no      |
 | `/audit/anchors`            | Anchor history and verification status                            | no      |

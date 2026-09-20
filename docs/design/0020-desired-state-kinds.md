@@ -38,7 +38,9 @@ it produces is plausible rather than verified, because there was nothing to veri
 
 - API operations, paths, and responses — [0002](0002-rackmarshal-api-schema.md).
 - How the provisioner renders, validates, and dispatches documents — [0011](0011-rackmarshal-provisioner.md).
-- Plugin-defined resource kinds, whose schemas the plugin publishes — [0013](0013-rackmarshal-agent-plugin-sdk.md).
+- Plugin-defined resource kinds, whose schemas travel in the plugin's required provisioner bundle —
+  [0021](0021-plugin-extensibility.md); the wire contract that carries them is
+  [0013](0013-rackmarshal-agent-plugin-sdk.md).
 - Inventory's endpoint and class schemas, which are a different tree — [0009](0009-rackmarshal-inventory.md).
 
 ## Proposal

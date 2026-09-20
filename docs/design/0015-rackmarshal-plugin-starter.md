@@ -63,7 +63,10 @@ rackmarshal-plugin-starter/
 │   ├── cli/                             # cobra: serve (default), version, manifest, check-config
 │   └── env/  version/                   # kept from go-cli-starter
 ├── manifest.yaml                        # embedded; least privilege
-├── schemas/marker.schema.json           # JSON Schema 2020-12 for the example kind
+├── provisioner/                         # the required provisioner bundle (0021)
+│   ├── schemas/marker.schema.json       # JSON Schema 2020-12 for the example kind
+│   ├── schemas/marker.result.json       # result schema both ends validate against
+│   └── policy/host.rego                 # deny-only, scoped to this plugin's kinds
 ├── testdata/                            # sample resources, development environment
 ├── tools/rename/  tools/fakeagent/      # standard library + SDK only
 ├── docs/                                # writing, security, testing, releasing, licensing, upgrading
@@ -90,6 +93,12 @@ Removed from `go-cli-starter`:
   `privileges: { runAsRoot: false, execPaths: [], network: [] }`, and
   `platforms: [linux/amd64, linux/arm64]`. It never sets `core: true`; the agent refuses that without a
   core signature (0013).
+- **Provisioner bundle** — built by `task bundle` and released as an asset. The example ships schemas and
+  a deny-only `host` policy and **no** provisioner service, which is the shape most plugins want: the
+  control plane validates and polices the kind while nothing extra runs beside the provisioner
+  ([0021](0021-plugin-extensibility.md)). `docs/` explains when a service is worth adding.
+- **Result** — `Apply` returns a small `result_json` conforming to `marker.result.json`, so the template
+  exercises the round trip and its 16 KiB limit rather than leaving authors to discover both.
 - **Rename** — `task rename -- -name acme-backup -module github.com/acme/rackmarshal-plugin-acme-backup`
   (plus `-group` for the example kind; runs `go run ./tools/rename`) rewrites the module path, `cmd/`,
   `RACKMARSHAL_PLUGIN_EXAMPLE` → `RACKMARSHAL_PLUGIN_ACME_BACKUP`, the manifest, the schema `$id`, workflow
@@ -123,7 +132,14 @@ go run ./tools/fakeagent -plugin bin/rackmarshal-plugin-example-linux-amd64 \
 
 `fakeagent` hashes and launches the binary the way `host.Launch` does. It sends the `development`
 environment from `testdata/environment.yaml` and prints plans, results, and log lines. `-env-id`
-exercises the mismatch refusal.
+exercises the mismatch refusal, and it validates every `result_json` against the bundle's result schema
+so an author sees the same rejection the agent would produce.
+
+`fakeprovisioner` is the bundle's counterpart: it loads `provisioner/`, compiles the policy, and runs the
+admission and dispatch phases over a document, so an author can see a scoped `deny` fire without standing
+up a provisioner. Conformance in CI fails a release whose bundle is missing, whose declared kind has no
+schema (`schema_missing`), or whose schema matches no declared capability (`schema_unclaimed`), so a
+third party finds out at build time rather than at import ([0021](0021-plugin-extensibility.md)).
 
 #### CI workflows
 
@@ -135,7 +151,7 @@ exercises the mismatch refusal.
 | `300-flow-main-branch-checks.yaml`        | push to main | same checks as 200                                        |
 | `100-user-deploy-release-artifact.yaml`   | dispatch     | calls the 800 release workflow; dry-run input             |
 | `800-call-semantic-release.yaml`          | call         | build, hash, sign, SBOM, index, verify, attest, publish   |
-| `800-call-plugin-conformance.yaml`        | call         | build all platforms; conformance on linux/amd64           |
+| `800-call-plugin-conformance.yaml`        | call         | build all platforms; conformance on linux/amd64; bundle completeness |
 | `800-call-{code-compiles,unit-test,vulncheck}.yaml` | call | unchanged from `go-cli-starter`                       |
 | `900-cron-starter-upstream-sync.yaml`     | weekly       | upstream sync pull request or issue                       |
 
