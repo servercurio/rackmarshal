@@ -68,8 +68,8 @@ actual one. So:
 
 - **Plum** carries primary actions — buttons, links, active navigation. At `13.73:1` on Quench it is
   among the most legible values available, which suits a control.
-- **Ember** appears in the mark, and otherwise only where something has genuinely failed or an action is
-  destructive.
+- **Ember** appears in the marks and wordmarks, and otherwise only where something has genuinely failed or
+  an action is destructive.
 
 This is the one rule in this document that a designer would not arrive at from the mark alone, and it is
 the reason the system does not look like an alert.
@@ -249,10 +249,24 @@ title-case wordmark. Four assets, an icon and a horizontal lockup in each theme:
 | Lockup, dark | `rackmarshal-lockup-dark.svg` | 857 × 256 | The same, on Anvil                  |
 
 **The pairs do not adapt themselves.** Unlike `tokens.css`, the mark has no theme logic: the light files
-carry a Plum cabinet with Anvil lettering, the dark files a Quench cabinet and lettering. The badge is
-Spark in both. The consuming surface picks the file matching its ground. Ember appears in neither, which
-keeps the mark from reading as an alert and leaves crimson free for critical state, exactly as the ramp
-rule requires.
+carry a Plum cabinet, the dark files a Quench one. The badge is Spark in both. The consuming surface picks
+the file matching its ground.
+
+**The lockup wordmark is two-tone, the same move the Server Curio wordmark makes.** "Server" is Ember and
+"Curio" is Plum; "Rack" takes the hot value and "marshal" the deep one, so the two lockups are recognisably
+the same construction. The accent flips by theme because neither value survives both grounds — Spark
+measures `1.59` on Quench, Ember `3.00` on Anvil — so Spark stands in for Ember on dark exactly as
+`--focus` already does in `tokens.css`:
+
+| File                          | "Rack"            | "marshal"          |
+|-------------------------------|-------------------|--------------------|
+| `rackmarshal-lockup.svg`      | Ember `6.09` AA   | Plum `13.73` AAA   |
+| `rackmarshal-lockup-dark.svg` | Spark `11.46` AAA | Quench `18.27` AAA |
+
+This is the one place Ember appears outside the Server Curio mark and critical state. It is confined to
+four letters of a wordmark, never a fill or a control, so the ramp rule — crimson stays free to mean
+failure — holds. The icon files remain Ember-free, which is what keeps a masthead or favicon from reading
+as an alert.
 
 **Minimum size is 32 px for the icon.** The rack indicators simplify as the mark is reduced; below 32 px
 a dedicated simplified favicon is preferable to shrinking this one. The lockup's wordmark sets its own
@@ -260,11 +274,14 @@ floor: below roughly 200 px wide the lettering stops being legible, so use the i
 
 The wordmark reads **Rackmarshal**, one word with a lowercase *m*. It is outlined path data in the
 supplied asset, so rendering never depends on an installed font, and it is not editable in place —
-changing it means regenerating from the kit's `source/build_logos.py`.
+changing the *lettering* means regenerating from the kit's `source/build_logos.py`. The two-tone split is
+not a re-setting of the type: the glyph run is partitioned between the `k` and the `m` into two `<path>`
+elements that carry different fills and identical `transform` and curve data, so the outlines are
+byte-for-byte what the kit produced.
 
 - **Never** — put a light mark on a dark ground or the reverse, recolour outside the ramp, lock the
   Rackmarshal mark up with the Server Curio mark, stretch or condense it, separate the badge from the
-  cabinet, or reduce the icon below 32 px.
+  cabinet, move the wordmark's colour break off the `k`/`m` boundary, or reduce the icon below 32 px.
 
 ### Distribution
 
