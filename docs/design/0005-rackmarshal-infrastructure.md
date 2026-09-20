@@ -108,8 +108,9 @@ described below, and `deployment.yaml` selects targets. Services may differ — 
 ```yaml
 forge_deployment:
   defaultTarget: kubernetes          # kubernetes | podman | docker | package | windows
+  defaultReplicas: 2                 # every service is replica-safe; see CONVENTIONS
   services:
-    rackmarshal-gateway: { target: package, hosts: gateway }
+    rackmarshal-gateway: { target: package, hosts: gateway, replicas: 3 }
   clusters:
     - id: east-1                     # lowercase DNS label
       namespace: rackmarshal-qa-east
@@ -117,6 +118,13 @@ forge_deployment:
       jwks: files/qa-east/clusters/east-1.jwks.json      # pinned; fingerprint in the ceremony record
       kubeconfig: vault:kv/rackmarshal/qa-east/clusters/east-1  # secret-manager reference
 ```
+
+Every service tolerates N replicas
+([CONVENTIONS — Running multiple replicas](CONVENTIONS.md#running-multiple-replicas)), so `replicas` is
+a capacity and availability choice rather than a per-service constraint. The default of 2 is what makes
+the rolling upgrade below non-disruptive; 1 is valid and means accepting a restart window. On
+`kubernetes` the value sets the chart's `replicaCount` and a `PodDisruptionBudget` of `replicas - 1`,
+so a drain cannot take the last one; on `package` and `windows` it is the number of hosts in the group.
 
 `forge_identity` renders `clusters` into `rackmarshal-identity`'s cluster issuer registry
 ([0006](0006-rackmarshal-identity.md)), mapping service account `<namespace>/rackmarshal-<name>` to

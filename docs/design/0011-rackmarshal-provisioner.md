@@ -300,6 +300,22 @@ key.
 | `plugin_verifications` | `agent_plugin_id`, `platform`, `sha256`, signer identity, Rekor log index, integrated time |
 | `audit_events`         | append-only: principal, action, document, policy decision                                  |
 
+#### Scaling
+
+N replicas, nothing elected. Reconciliation was designed for this from the start — workers claim
+`reconcile_queue` rows with `SELECT … FOR UPDATE SKIP LOCKED` and a lease that lapses on its own if the
+worker dies (see Reconciliation above), which is the per-item queue primitive in
+[CONVENTIONS](CONVENTIONS.md#running-multiple-replicas). Two consequences that were implicit are worth
+stating:
+
+- **`directive_bundles` pruning** ("last 10 kept") happens inline on the write that adds the eleventh,
+  inside the transaction that already holds that endpoint's lease. It is not a background job, so it
+  needs no separate claim.
+- **`enforcement_reports` partition creation** is scheduled work and would otherwise race: N replicas
+  would each try to create next month's partition, and all but one would fail on the duplicate
+  relation. It takes `pg_try_advisory_lock` and skips the tick when another replica holds it, running
+  far enough ahead of the month boundary that a skipped tick is harmless.
+
 Credentials for devices are **never** stored here or in bundles: `credentialRef` names a secret that a
 `SecretProvider` resolves at apply time. The first provider reads files mounted by
 `rackmarshal-infrastructure`.

@@ -310,14 +310,17 @@ PostgreSQL through the starter's pgx, bun, and goose migrations. Every tenant-sc
 | `certificates`                 | `serial`, `spiffe_id`, `profile`, `not_after`, `revoked_at`, `reason`        |
 | `signing_keys`                 | `kid`, `purpose`, `backend`, `key_ref`, `sealed_key`, `state`                |
 | `audit_events`                 | `seq`, `time`, `actor`, `action`, `target`, `outcome`, `prev_hash`, `hash`   |
+| `audit_anchors`                | `interval_start` (PK), `seq`, `hash`, `state`, `attempts`, `object_key`      |
+| `crl_cache`                    | `generation` (PK), `der`, `this_update`, `next_update`, `signed_at`          |
 
 - Passwords use Argon2id at no less than OWASP's minimum, 19 MiB, 2 iterations, parallelism 1
   ([Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)).
 - The service's database role has no `UPDATE` or `DELETE` on `audit_events`, which is the control that
   stops the service from rewriting its own history. Each row also hashes the previous one, which alone
   detects tampering only against a head recorded elsewhere, since a database superuser could recompute
-  the whole chain. So the head is anchored outside the database: every `audit.anchorInterval` the
-  service signs `{seq, hash, time, environmentId}` with its HSM or KMS key and writes it to append-only
+  the whole chain. So the head is anchored outside the database: every `audit.anchorInterval` one
+  replica — the one that wins the claim row described under Scaling — signs
+  `{seq, hash, time, environmentId}` with its HSM or KMS key and writes it to append-only
   storage in a different cloud account from the environment, under an object-lock or WORM retention
   policy, using credentials that may only `PutObject` — no delete, overwrite, or read. An attacker who
   takes the environment entirely therefore still cannot rewrite its audit history, because the account
@@ -328,6 +331,45 @@ PostgreSQL through the starter's pgx, bun, and goose migrations. Every tenant-sc
   anchors as a missing interval. `rackmarshal-cli audit verify` ([0010](0010-rackmarshal-cli.md)) does the
   comparison with read access to the anchor account alone.
 - `sealed_key` is populated only for the KEK-sealed backend.
+
+#### Scaling
+
+`rackmarshal-identity` runs N replicas and elects nothing. Request handling is already stateless — every
+read and write goes to PostgreSQL — so the work is confined to four places where a single writer would
+otherwise be assumed, per
+[CONVENTIONS — Running multiple replicas](CONVENTIONS.md#running-multiple-replicas).
+
+- **Audit chain.** Each row commits to the one before it, so appends serialize. The transaction takes
+  `pg_advisory_xact_lock(hashtext('rackmarshal.audit'))`, reads the head, and inserts with
+  `seq = head.seq + 1` and `prev_hash = head.hash`. `seq` is deliberately not a sequence: a rolled-back
+  transaction would burn a number and leave a gap, and a gap in a hash chain cannot be told apart from
+  a deleted record. The lock covers the append alone and releases on commit. Audit volume is bounded by
+  authenticated operations, so one append at a time is not the constraint at expected scale; the
+  recorded alternative if it becomes one is to sequence the chain by `chain_id` and have the verifier
+  check each chain.
+- **Anchoring.** Every replica computes the current interval and writes a claim row —
+  `INSERT INTO audit_anchors (interval_start, …) VALUES (…) ON CONFLICT DO NOTHING`. Only the replica
+  whose insert affected a row signs the head and performs the `PutObject`; the others do nothing. The
+  row carries `state` (`pending`, `written`) and `attempts`, so a failed write is visible in the
+  database as well as by its absence from the anchor store, and any replica may retry it on a later
+  tick. A retry can leave two objects for one interval, both valid signatures over the same head:
+  `rackmarshal-cli audit verify` requires at least one valid anchor per interval, not exactly one.
+- **Signing keys.** The invariants are schema, not coordination:
+  `CREATE UNIQUE INDEX signing_keys_one_current ON signing_keys (purpose) WHERE state = 'current'`, and
+  the same for `next`. Rotation is a single transaction that promotes `next` to `current`, `current` to
+  `previous`, and inserts a fresh `next`. A second replica rotating concurrently violates the index and
+  rolls back having done nothing, so two `current` keys cannot be published whether or not either
+  replica took a lock.
+- **CRL.** Every revocation increments a `crl_generation` counter. A replica serving `/crl.der` reads
+  the signed DER for the current generation from `crl_cache`; on a miss it generates, signs, and
+  `INSERT … ON CONFLICT DO NOTHING`, then reads back whichever row won. Replicas therefore serve
+  byte-identical CRLs. That matters because agents cache by `nextUpdate`: replicas signing their own
+  CRLs would hand out different `thisUpdate` times and make agent caches flap on every reconnect.
+
+OCSP needs none of this. Responses are signed per request by the delegated responder, whose key is
+local to the replica, and each replica holds its own responder certificate issued under the same CA
+with `OCSPSigning` and `id-pkix-ocsp-nocheck`. A client that sees a different responder certificate
+from a different replica validates it the same way.
 
 ### Security
 

@@ -164,6 +164,18 @@ No database. State lives in three places:
 The sealing key is per environment, read from `cookies.keyFile`, and rotated with a previous key
 accepted for 24 hours. A cookie sealed in another environment fails to open.
 
+#### Scaling
+
+N replicas, nothing elected and nothing shared. This falls out of the design above rather than needing
+anything added: the service has no database, every durable thing lives in `rackmarshal-identity`, and the
+two cookies are sealed with a key read from a file that every replica reads. A flow begun on one
+replica therefore completes on any other, which is what makes the service safe behind a load balancer
+that does not pin sessions.
+
+Rate limiting is the one piece of per-replica state, and it is not the control that matters: attempt
+counters and lockout live in `rackmarshal-identity` (see Data & storage), so the per-replica limit here
+sheds load while the authoritative count stays central and exact.
+
 ### Security
 
 #### Cookies and CSRF
@@ -296,7 +308,7 @@ by the service in hardened tiers rather than left to configuration.
 
 ## Open questions
 
-- **Rate-limit state** — per-instance memory limits diverge across replicas; is `rackmarshal-identity`-backed
+- **Rate-limit shedding** — per-replica limits shed load unevenly; is `rackmarshal-identity`-backed
   counting enough, or is a shared limiter needed?
 - **`form-action` and redirects** — confirm browser behavior before fixing the CSP.
 - **Consent** — skip consent for first-party clients like `rackmarshal-cli` (proposed), or always show it?
