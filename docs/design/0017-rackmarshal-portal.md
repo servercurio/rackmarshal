@@ -126,7 +126,8 @@ library, which keeps the CSP free of another script origin and the module graph 
 
 ### Data & storage
 
-None beyond the session store 0016 specifies. The portal caches nothing between requests: a stale
+None beyond the session store 0016 specifies, which is PostgreSQL-backed by default precisely so N
+replicas share one session. The portal caches nothing between requests: a stale
 endpoint list shown to a tenant is worse than a slower page, and the gateway is already the consistency
 boundary. Uploaded directive documents are held in memory for the duration of a plan and are never
 written to disk.

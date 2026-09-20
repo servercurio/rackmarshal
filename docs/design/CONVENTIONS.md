@@ -130,6 +130,36 @@ a module, as 0001 is.
   and `staging`; last-resort features call `AllowLastResort("<feature>")`, which refuses in `production`
   unless the kebab-case feature name is in `overrides`, and logs every override at `warn`.
 
+## Running multiple replicas
+
+Every service runs as N replicas, N >= 1, and no replica holds a role the others do not. Nothing elects
+a primary and no configuration names an instance. A service that cannot satisfy this has a design
+defect, not a deployment note.
+
+- **Per-request state is per-replica.** Caches, rate-limit buckets, and connection pools live in the
+  process. A service states the bound on divergence — normally a TTL — and sizes limits knowing an
+  operator multiplies them by the replica count.
+- **Shared state lives in PostgreSQL, and the database enforces the invariant.** Prefer a constraint
+  that makes the wrong state unrepresentable over a lock that makes it unreachable. A partial unique
+  index permitting one `current` signing key beats a mutex around rotation, because the index also
+  binds the replica that forgot to take the mutex.
+- **Scheduled work is claimed, not assumed.** A loop that fires on every replica runs N times. Which
+  primitive depends on whether a missed run is detectable:
+
+| Work | Primitive | Why |
+|------|-----------|-----|
+| Idempotent and skippable — retention sweeps, cache refresh | `pg_try_advisory_lock`, skip the tick when not acquired | No lease table and no failover gap; the next tick catches up |
+| Must happen once per interval, and its absence is itself a signal — audit anchoring | An interval-keyed claim row with `INSERT … ON CONFLICT DO NOTHING` | The row records that the interval was handled, so a missing row is the alarm |
+| Per-item queues — reconciliation | `SELECT … FOR UPDATE SKIP LOCKED` with an owner and a lease expiry | A crashed worker's lease lapses without a reaper |
+
+Serial chains — anything where record *n* commits to record *n-1* — take `pg_advisory_xact_lock` for the
+append and read the predecessor inside the same transaction. A sequence is not a substitute: a
+rolled-back transaction burns its number and leaves a gap, and in a hash chain a gap is
+indistinguishable from a deletion.
+
+Each design document states its position under **Scaling** in Data & storage, including when the
+answer is that nothing is shared.
+
 ## Logging and telemetry
 
 - Executables log and export telemetry only through `rackmarshal-common`. Other shared libraries return errors

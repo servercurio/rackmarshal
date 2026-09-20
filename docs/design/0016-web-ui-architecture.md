@@ -205,9 +205,12 @@ the session.
 | Session      | Access token, refresh token, principal, tenant, roles | Absolute 8 hours |
 | Flow state   | PKCE verifier, `state`, nonce, return path            | 10 minutes       |
 
-The session store is an interface with two implementations: in-process for single-replica and development
-use, and PostgreSQL for multi-replica deployments, reusing the database conventions 0006 and 0009
-already set. Tokens in the store are encrypted with a key from the same HSM or KMS backend 0006 uses, so
+The session store is an interface with two implementations: PostgreSQL, which is the default, and
+in-process, which is permitted only when `environment.tier` is `development` and refused at startup
+otherwise. The default has to be the replica-safe one. An in-process store does not fail loudly under a
+second replica — it fails as intermittent logouts, once, for whichever users land on the other pod, and
+that is a poor thing to discover in production. PostgreSQL reuses the database conventions 0006 and
+0009 already set. Tokens in the store are encrypted with a key from the same HSM or KMS backend 0006 uses, so
 a database backup does not contain usable bearer tokens. Sessions are deleted on logout, on refresh
 failure, and when the environment ID of the session does not match the process's own.
 
@@ -263,7 +266,7 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
 | YAML                       | Variable                              | Default                       |
 |----------------------------|---------------------------------------|-------------------------------|
 | `server.httpsPort`         | `<PREFIX>_SERVER_HTTPS_PORT`          | `8443`                        |
-| `session.backend`          | `<PREFIX>_SESSION_BACKEND`            | `memory` (`postgres` for HA)  |
+| `session.backend`          | `<PREFIX>_SESSION_BACKEND`            | `postgres` (`memory` dev only)|
 | `session.idleTimeout`      | `<PREFIX>_SESSION_IDLE_TIMEOUT`       | `30m`                         |
 | `session.absoluteTimeout`  | `<PREFIX>_SESSION_ABSOLUTE_TIMEOUT`   | `8h`                          |
 | `oidc.clientId`            | `<PREFIX>_OIDC_CLIENT_ID`             | none — required               |
@@ -321,8 +324,11 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
   consumers? Extraction adds a sixteenth repository.
 - **OIDC relying-party library** — `coreos/go-oidc` and its `go-jose` graph, or a hand-written exchange
   over `rackmarshal-sdk`'s HTTP client with a small JWKS cache?
-- **Session store for HA** — PostgreSQL reuses existing conventions; a dedicated store would avoid
-  putting session churn on an operational database.
+- **Session store ownership** — PostgreSQL reuses existing conventions, but it gives the portal and
+  console a database they otherwise would not have. `rackmarshal-sso` already keeps its sessions in
+  `rackmarshal-identity` and holds no database of its own (0007); the portals could do the same and stay
+  storage-free. That trades a database for a dependency on identity's availability for every page
+  render, which is why it is not proposed outright.
 - **Console step-up scope** — which operations require re-authentication, beyond the three named above?
 - **Notification surface** — do the portals need server-sent events for live drift status, or is htmx
   polling on a 30-second interval sufficient at expected scale?

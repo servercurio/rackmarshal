@@ -158,8 +158,9 @@ origin in the content security policy.
 
 ### Data & storage
 
-Only the session store 0016 specifies. The console is stateless with respect to the deployment: it
-renders what the gateway returns and caches none of it. Audit events in particular are never copied into
+Only the session store 0016 specifies, which is PostgreSQL-backed by default so that N replicas share
+one session. The console is otherwise stateless with respect to the deployment: it renders what the
+gateway returns and caches none of it, so any replica can serve any request. Audit events in particular are never copied into
 a local store, because a second copy with its own retention would weaken the claim the chain makes.
 
 ### Security

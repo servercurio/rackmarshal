@@ -221,6 +221,35 @@ No persistent state. In memory: the JWKS (refreshed every 5 minutes, or on an un
 every 30 seconds), revocation answers inside `revocation.Checker`, agent-to-tenant lookups (5 minutes), and
 rate-limit buckets.
 
+#### Scaling
+
+N replicas, nothing elected and nothing shared. Every cache above is per-replica by choice, and the
+divergence between two replicas is bounded by the TTL already stated for each — 5 minutes for the JWKS
+and tenant lookups, `nextUpdate` for revocation. No cache extends the window in which a revoked
+certificate is accepted, because that window is the TTL whether one replica or twenty hold the entry.
+
+Rate limits are the one property that changes with replica count, and they change linearly: the
+configured values in the table above are **per replica**, so N replicas admit N times the traffic
+before limiting. That is accepted rather than worked around, because none of the buckets is the
+authoritative control for what it protects.
+
+| Bucket | Why per-replica is acceptable |
+|---|---|
+| Operator, before and after auth | Capacity protection, not a security boundary; size it as `total / replicas` |
+| `/sso/` token endpoints | `rackmarshal-identity` enforces attempt counters centrally (0007) |
+| Agent | The agent's certificate is revocable, and revocation is checked every request |
+| Agent enrollment | Enrollment tokens are single-use and redeem exactly once under concurrency (0006) |
+
+The enrollment row is the one that would otherwise be alarming at 10 per minute times N. It holds
+because the gateway's limit is defense in depth over an authoritative control: a token that is redeemed
+concurrently succeeds exactly once no matter how many replicas accept the requests.
+
+Two smaller consequences, stated so they are not discovered later. TLS session tickets are per replica,
+so an agent reconnecting to a different replica performs a full handshake rather than resuming; at the
+agent's reporting interval this is negligible, and a shared ticket key is the recorded alternative. And
+the health listener is per replica, so `/readyz` reports that replica's upstream reachability, which is
+what a load balancer draining one pod needs it to mean.
+
 ### Security
 
 #### Token verification (operator ingress)
@@ -401,7 +430,10 @@ omitted here.
   TLS-layer enforcement, but 0001 describes enrollment as a route on the agent ingress. Worth
   reconsidering if the single-operation allowlist proves fragile.
 - **A shared rate-limit store** (e.g. Redis) — exact global limits, but adds a client module and a stateful
-  dependency. Per-replica limits are proposed first.
+  dependency. Per-replica limits are proposed instead, for the reasons under Scaling: no bucket is the
+  authoritative control for what it protects.
+- **Shared TLS session ticket keys** across replicas — lets agents resume through a load balancer, at the
+  cost of distributing a key whose compromise costs forward secrecy for the tickets it covers.
 - **Advertising limits with `RateLimit` headers** — still an Internet-Draft
   ([draft-ietf-httpapi-ratelimit-headers-11](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/));
   `Retry-After` alone is used for now.
@@ -418,7 +450,6 @@ omitted here.
 - **Agent tenant lookup** — cache TTL, and whether disabling an agent in `rackmarshal-identity` should also
   revoke its certificate.
 - **Role names** in security requirements, or a dedicated `x-rackmarshal-permission` extension?
-- **Rate limits** across replicas — are per-replica limits acceptable at expected scale?
 
 ## References
 

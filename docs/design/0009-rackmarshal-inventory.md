@@ -111,6 +111,7 @@ and [0008](0008-rackmarshal-gateway.md), never from the path.
 | `GET /endpoints/{endpointId}`                    | operator, internal   | `ETag` = `resourceVersion`                |
 | `PATCH /endpoints/{endpointId}`                  | operator             | JSON Merge Patch; `If-Match` required     |
 | `DELETE /endpoints/{endpointId}`                 | operator             | sets `retired`; purged after retention    |
+| `GET /retention` / `PUT /retention`              | operator             | the calling tenant's retention policy     |
 | `GET /endpoints/{endpointId}/facts`              | operator, internal   | current facts                             |
 | `PUT /endpoints/{endpointId}/facts`              | internal             | agentless facts from `rackmarshal-provisioner`  |
 | `GET /endpoints/{endpointId}/revisions`          | operator             | `kind=declared` or `kind=facts`           |
@@ -275,11 +276,46 @@ DROP TABLE endpoint_events, endpoint_relationships, endpoint_revisions, endpoint
 
 - **Label selectors** compile to `labels @> '{"site":"dc1"}'` for equality and `in`, and `labels ? 'k'` for
   existence. Both use the default `jsonb_ops` GIN index; `jsonb_path_ops` lacks `?`.
-- **Retention** — a background job deletes, in batches, facts revisions older than 90 days, declared
-  revisions older than 400 days, events older than 7 days, and retired endpoints after 30 days.
-  Partitioning waits until volume requires it.
+- **Retention** — per tenant, swept per tenant. Row-level security forces that shape rather than
+  merely permitting it: the runtime role has no `BYPASSRLS`, so no single statement can see every
+  tenant's rows. The sweep already has to iterate tenants and set `rackmarshal.tenant_id` for each — which
+  is precisely the context needed to read that tenant's policy. Per-tenant retention is the natural
+  shape here, not added machinery.
+
+  ```sql
+  CREATE TABLE tenant_retention (
+    tenant_id text PRIMARY KEY,
+    facts_revisions interval,     -- NULL inherits the environment default
+    declared_revisions interval,
+    events interval,
+    retired_endpoints interval,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    updated_by text NOT NULL
+  );
+  ```
+
+  A `NULL` column inherits the environment default (`history.factsRetention` and its siblings), so a
+  tenant that never sets a policy behaves exactly as it does today, and the defaults stay the 90 / 400 /
+  7 / 30-day values. Writes are clamped to `[retention.minimum, retention.maximum]` from environment
+  configuration, because retention is both a cost and a compliance control the operator owns: with no
+  floor a tenant could shorten its own history ahead of an audit, and with no ceiling one tenant could
+  grow the environment's storage without bound. A change is an audited event carrying the old and new
+  values.
+
+  Each tick, the sweep takes `pg_try_advisory_lock` and skips when another replica holds it
+  ([CONVENTIONS](CONVENTIONS.md#running-multiple-replicas)); deletes stay batched. Partitioning waits
+  until volume requires it.
 - **Declared revisions** store full snapshots of labels and attributes (small). Facts revisions are stored
   only when the digest changes.
+
+#### Scaling
+
+N replicas, nothing elected. Every request is a PostgreSQL transaction and the service caches nothing
+between requests, so reads and writes need no coordination: concurrent writes to one endpoint are
+already settled by `resource_version` optimistic concurrency, which does not care how many processes
+compete. The retention sweep is the only scheduled work, and it is claimed as described above. Agent
+report ingestion (`reports.interval`, default 5m) is agent-driven rather than scheduled here, so it
+distributes across replicas by whichever one the gateway routes to.
 
 ### Security
 
@@ -332,6 +368,8 @@ Prefix `RACKMARSHAL_INVENTORY_`. Starter server, logging, environment, and telem
 | `reports.interval`                  | `RACKMARSHAL_INVENTORY_REPORTS_INTERVAL`               | `5m`                  |
 | `autoRegistration.enabled`          | `RACKMARSHAL_INVENTORY_AUTO_REGISTRATION_ENABLED`      | `true`                |
 | `history.factsRetention`            | `RACKMARSHAL_INVENTORY_HISTORY_FACTS_RETENTION`        | `2160h`               |
+| `retention.minimum` / `.maximum`    | `RACKMARSHAL_INVENTORY_RETENTION_MINIMUM` / `_MAXIMUM` | `168h` / `26280h`     |
+| `retention.sweepInterval`           | `RACKMARSHAL_INVENTORY_RETENTION_SWEEP_INTERVAL`       | `1h`                  |
 | `history.declaredRetention`         | `RACKMARSHAL_INVENTORY_HISTORY_DECLARED_RETENTION`     | `9600h`               |
 | `events.retention`                  | `RACKMARSHAL_INVENTORY_EVENTS_RETENTION`               | `168h`                |
 | `internalCallers`                   | `RACKMARSHAL_INVENTORY_INTERNAL_CALLERS`               | `rackmarshal-provisioner`   |
@@ -391,6 +429,11 @@ The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces 
 - **Fact scrubbing** — who strips secrets that plugins might report, the agent ([0012](0012-rackmarshal-agent.md))
   or inventory?
 - **Retention defaults** — are 90 days of facts history and 400 days of declared history right?
+- **Where tenant policy lives** — `tenant_retention` is proposed here because retention governs this
+  service's own storage and has to be read inside the sweep's transaction. `rackmarshal-identity` is the
+  tenant registry and already holds per-tenant policy in `tenants.agent_cert_lifetime` (0006), so the
+  alternative is a column there and a cached `internal` lookup. That keeps one tenant record but puts a
+  cross-service call, and a failure mode, inside a background job.
 
 ## References
 
