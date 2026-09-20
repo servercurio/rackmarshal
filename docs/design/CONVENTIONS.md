@@ -164,11 +164,16 @@ answer is that nothing is shared.
 
 - Executables log and export telemetry only through `rackmarshal-common`. Other shared libraries return errors
   and accept injected transports instead of logging.
-- Logs are JSON lines on stdout (console format only in `development`) with keys `time` (RFC 3339 UTC),
-  `level`, `message`, `error`; `trace_id`, `span_id`, `trace_flags`
+- Every executable writes each log event to two sinks from one `zerolog.Logger`, each with its own
+  level: a **console sink** in logfmt on stdout, for people, and an **OTLP sink** that ships to a
+  collector or any OTLP-compatible backend, for machines. `<PREFIX>_LOG_CONSOLE_FORMAT=json` restores
+  JSON lines for a deployment that still scrapes stdout. A log call never blocks on the OTLP sink:
+  its queue is bounded and overflow is dropped and counted.
+- Events carry `time` (RFC 3339 UTC), `level`, `message`, `error`; `trace_id`, `span_id`, `trace_flags`
   ([trace context in logs](https://opentelemetry.io/docs/specs/otel/compatibility/logging_trace_context/));
   and on every event `service.name`, `service.version`, `service.instance.id`,
-  `deployment.environment.name`, `rackmarshal.environment.tier`, `rackmarshal.environment.id`.
+  `deployment.environment.name`, `rackmarshal.environment.tier`, `rackmarshal.environment.id`. The same
+  fields reach both sinks; only the encoding differs.
 - Other fields use the OpenTelemetry semantic-convention name when one exists (`http.request.method`,
   `http.response.status_code`, `http.route`, `url.path`, `client.address`); Rackmarshal concepts use dotted,
   snake_case names under `rackmarshal.` (`rackmarshal.tenant.id`, `rackmarshal.agent.id`).
