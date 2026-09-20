@@ -247,7 +247,13 @@ Per plugin and platform, with `<asset>` = `rackmarshal-plugin-<name>-<os>-<arch>
 | `<asset>.core.dsse.json` (core plugins only) | DSSE core statement signed with the core-plugin key      |
 | `<asset>.cdx.json` + bundle                  | CycloneDX SBOM with licenses                             |
 | `rackmarshal-plugin-<name>.manifest.yaml` + bundle | capabilities, privileges, protocol versions              |
+| `rackmarshal-plugin-<name>.provisioner.tar.zst` + bundle | **required** provisioner bundle: schemas, Rego, result schema |
 | `plugins-index.json` + bundle                | name, version, platform, SHA-256, protocols, SDK version |
+
+The provisioner bundle is per plugin rather than per platform, because it is data rather than an
+executable. It is required of every plugin, including the core ones: a release without it is not a valid
+plugin release, since the control plane could then neither validate nor police the kinds that release
+declares ([0021](0021-plugin-extensibility.md)).
 
 `.releaserc.json` keeps the starter's analyzer rules, with a `publishCmd` of
 `task build && task hash && task sign && task coresign && task sbom && task index && task verify`.
@@ -311,19 +317,22 @@ spec:
     refs: [refs/heads/main, "refs/heads/release/*"]
 ---
 apiVersion: rackmarshal.servercurio.com/v1alpha1
-kind: AgentPlugin
+kind: Plugin
 metadata: { name: packages }
 spec:
   publisher: servercurio
   version: 0.4.0
   baseURL: https://github.com/servercurio/rackmarshal-agent-plugins/releases/download/v0.4.0
-  sha256: { linux/amd64: "…", linux/arm64: "…" }
-  grant: { capabilities: [resource:rackmarshal.servercurio.com/v1alpha1/Package] }
+  agent:
+    sha256: { linux/amd64: "…", linux/arm64: "…" }
+    grant: { capabilities: [resource:rackmarshal.servercurio.com/v1alpha1/Package] }
+  provisioner:
+    bundle: { sha256: "…" }       # required; these plugins ship no provisioner service
 ```
 
 1. **Import** — `rackmarshal-provisioner` verifies `plugins-index.json`, the manifest, and every listed
    asset's `.sigstore.json` against the publisher with sigstore-go, and writes the verified digests into
-   `AgentPlugin` ([0011](0011-rackmarshal-provisioner.md)). Nothing auto-updates to "latest". The publisher
+   `Plugin` ([0011](0011-rackmarshal-provisioner.md)). Nothing auto-updates to "latest". The publisher
    identity is built from structured fields, never a free-form regular expression. Bundle pins carry
    that identity.
 2. **Download** — the agent fetches `<asset>` and `<asset>.sigstore.json` from `baseURL`. That may be a

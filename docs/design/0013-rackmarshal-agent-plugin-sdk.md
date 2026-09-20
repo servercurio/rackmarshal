@@ -73,7 +73,8 @@ rackmarshal-agent-plugin-sdk/
 ├── pkg/
 │   ├── plugin/v1alpha1/                 # package pluginv1alpha1 (generated, committed)
 │   ├── handshake/                       # Config, SupportedProtocols
-│   ├── manifest/                        # Manifest, Capability, Privileges, NetworkGrant, ValidateName
+│   ├── manifest/                        # Manifest, Capability, Privileges, NetworkGrant, Policy
+│   ├── bundle/                          # build, read, and verify a provisioner bundle (0021)
 │   ├── serve/                           # Main, Options, FactsCollector, ResourceHandler, Granted
 │   ├── host/                            # Launch, Config, Plugin, ErrEnvironmentMismatch
 │   ├── tracecontext/                    # Carrier, UnaryClient, UnaryServer
@@ -107,7 +108,19 @@ message InitRequest { Environment environment = 1; string agent_id = 2; Grant gr
 message Grant { repeated string capabilities = 1; Privileges privileges = 2; string mode = 3; }
 message Resource { string api_version = 1; string kind = 2; string name = 3; bytes spec_json = 4; }
 message Fact { string name = 1; bytes value_json = 2; } // name: <plugin>.<snake_case>
+
+message ApplyResourceResponse {
+  Status status = 1;                 // applied | unchanged | failed
+  bytes observed_digest = 2;
+  bytes result_json = 3;             // plugin-defined, validated against the bundle's result schema
+}
 ```
+
+`result_json` is the return half of `spec_json`, added by [0021](0021-plugin-extensibility.md). `serve`
+refuses a response larger than 16 KiB, and the agent validates the payload against the result schema in
+the plugin's provisioner bundle before it reaches the outbox. `PlanResourceResponse` carries the same
+field for a dry run. A result that is oversized, unparseable, or non-conforming fails that one resource
+with `result_invalid`; it never fails the report.
 
 - **JSON payloads** — specs and fact values keep their 0002 JSON Schema form, with no protobuf copies
   of kinds. The agent schema-validates and OPA-checks specs before sending them (0001), and validates
@@ -117,6 +130,32 @@ message Fact { string name = 1; bytes value_json = 2; } // name: <plugin>.<snake
   `genproto/googleapis/rpc`, which gRPC already links.
 - **Size** — gRPC's default 4 MiB receive limit. The agent passes content inline; plugins fetch nothing.
   The one exception is the validator's `RefreshTrust`, under its network grant.
+
+#### Provisioner-side services
+
+A plugin may ship an optional provisioner service alongside its required bundle (0021). It speaks the
+same protobuf package, versioned with it, and `rackmarshal-provisioner` launches it as a separate process
+over a local socket:
+
+```proto
+service ProvisionerPluginService {
+  rpc GetManifest(GetManifestRequest) returns (GetManifestResponse);
+  rpc Init(InitRequest) returns (InitResponse);
+  rpc ValidateDocument(ValidateDocumentRequest) returns (ValidateDocumentResponse);
+  rpc InterpretResult(InterpretResultRequest) returns (InterpretResultResponse);
+  rpc Propose(ProposeRequest) returns (ProposeResponse);
+}
+message InterpretResultRequest {
+  Resource resource = 1; string endpoint_id = 2; string report_id = 3; bytes result_json = 4;
+}
+message InterpretResultResponse {
+  string summary = 1; repeated Condition conditions = 2; repeated Resource proposed = 3;
+}
+```
+
+The two halves of a plugin never connect to each other. A result reaches `InterpretResult` only as a
+payload the agent posted through `rackmarshal-gateway` and the provisioner validated on receipt, so a
+plugin gains no route it did not have and opens no listener.
 
 #### Verifier service
 
@@ -193,6 +232,8 @@ privileges:
     - { host: "*", port: 80 }
     - { host: "*", port: 443 }
 platforms: [linux/amd64, linux/arm64]
+policies:                       # 0021; the same files ship in the provisioner bundle
+  - { phase: host, package: rackmarshal.plugin.packages.host, file: policy/host.rego }
 ```
 
 | Capability                          | Service           | Meaning                                                |
@@ -200,6 +241,13 @@ platforms: [linux/amd64, linux/arm64]
 | `facts`                             | `FactsService`    | read-only inventory facts                              |
 | `resource:<group>/<version>/<Kind>` | `ResourceService` | validate, plan, and apply one kind                     |
 | `verifier:sigstore`                 | `VerifierService` | Sigstore verification for install decisions; core only |
+| `validate`                          | `ProvisionerPluginService` | Validate a document at admission        |
+| `interpret`                         | `ProvisionerPluginService` | Read an agent half's `result_json`      |
+| `propose`                           | `ProvisionerPluginService` | Return follow-up desired state          |
+
+The last three are granted to a provisioner service the same way the others are granted to an agent half:
+the intersection of the manifest and the operator's policy, never more than the manifest declares. They
+are separate capabilities so a plugin that only reads results cannot propose state.
 
 1. **Declare** — after verifying and launching the plugin (0012), the agent reads its manifest. The
    manifest is trusted only as far as the verified publisher.
@@ -461,8 +509,9 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
 - **Log writer** — 0004's `logging.Initialize` needs an option to write to stderr.
 - **Plugin spans** — no export (proposed), forwarding through the agent, or direct export with a network
   grant?
-- **Third-party kinds** — which groups can they use, and how do their schemas reach the agent and
-  [0011](0011-rackmarshal-provisioner.md)?
+- **Third-party kinds** — which groups can they use? How their schemas reach the agent and
+  [0011](0011-rackmarshal-provisioner.md) is settled: the required provisioner bundle carries them
+  ([0021](0021-plugin-extensibility.md)). The group-naming half is still open.
 - **Long operations** — unary `ApplyResource` with a deadline (proposed), or streamed progress?
 - **Scope** — `GRPCBroker` host callbacks (secrets, content), and host-attached device drivers?
 - **Hardening** — execute from a verified file descriptor to close the `SecureConfig` gap? Windows ACL
@@ -475,6 +524,8 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
 - [0001](0001-project-repositories.md), [CONVENTIONS.md](CONVENTIONS.md),
   [0002](0002-rackmarshal-api-schema.md), [0003](0003-rackmarshal-sdk.md), [0004](0004-rackmarshal-common.md),
   [0012](0012-rackmarshal-agent.md), [0014](0014-rackmarshal-agent-plugins.md).
+- [0021 — Plugin extensibility](0021-plugin-extensibility.md) — the provisioner bundle, the optional
+  provisioner service, the result round trip, and plugin-supplied policy.
 - [`hashicorp/go-plugin` v1.8.0](https://github.com/hashicorp/go-plugin/tree/v1.8.0) (MPL-2.0):
   - `client.go` — `SecureConfig`, `SkipHostEnv`, `AutoMTLS`, `RunnerFunc`, `logStderr`, 64 KiB buffer;
   - `server.go` — cookie comment, `PLUGIN_PROTOCOL_VERSIONS`, stdio redirection, Windows TCP listener;

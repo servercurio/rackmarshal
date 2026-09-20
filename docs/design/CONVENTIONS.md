@@ -52,8 +52,12 @@ a module, as 0001 is.
   drift. There are no standalone JSON Schema files. [0002](0002-rackmarshal-api-schema.md) sets the
   direction; [0020](0020-desired-state-kinds.md) specifies the manifest kinds.
 - **REST + JSON, internal and external.** Services call each other over the same contract with mutual
-  TLS. There is no service-to-service gRPC; gRPC appears only between `rackmarshal-agent` and plugins, whose
-  go-plugin protobuf contract lives in `rackmarshal-agent-plugin-sdk`.
+  TLS. There is no service-to-service gRPC. gRPC appears only between a host process and its own
+  plugins — `rackmarshal-agent` and its plugin halves, and `rackmarshal-provisioner` and its optional
+  plugin services ([0021](0021-plugin-extensibility.md)) — over the go-plugin protobuf contract in
+  `rackmarshal-agent-plugin-sdk`, and always on a local transport that binds no port. A plugin channel is
+  not a service-to-service call and never leaves the host or pod; two plugins never connect to each
+  other.
 - **Paths** — `/<service>/<version>/<plural-resource>[/{id}]`, kebab-case segments, e.g.
   `/inventory/v1alpha1/endpoints/{endpointId}`. `rackmarshal-gateway` routes on the first segment.
 - **Audience** — every operation declares `x-rackmarshal-audience` with one or more of `operator`, `agent`,
@@ -103,6 +107,25 @@ a module, as 0001 is.
   the operator and third-party ingress keeps the starter's hardened TLS 1.2+ configuration.
 - **Keys and secrets** — leaf keys are ECDSA P-256, generated where used, and never leave that host.
   Tokens and keys are never logged or placed in URLs, and are read from files (`...File` keys).
+
+## Plugins
+
+[0021](0021-plugin-extensibility.md) settles the shape; these are the parts other repositories depend on.
+
+- **Every plugin ships a provisioner bundle** — its JSON schemas, its Rego, and its result schema, signed
+  and digest-pinned like any other release asset. A plugin that ships no bundle is not importable, because
+  the control plane would otherwise sign a directive containing a kind it can neither validate nor police.
+- **A provisioner-side executable is optional.** The bundle is data; the service that interprets results
+  and proposes follow-up work is a separate, optional artifact in the same `Plugin` document at the same
+  version.
+- **Plugin policy may only deny, and only its own kinds.** The host filters policy input to the kinds the
+  plugin was granted before evaluating; a policy is never trusted to scope itself. Installing a plugin can
+  therefore never widen what the platform or a tenant allows.
+- **Both ends validate both directions.** The agent and the provisioner each schema-validate what they
+  send and what they receive, against the schema the pinned plugin version publishes. Neither relies on
+  the other having checked.
+- **Plugin payloads are bounded at every hop** and are tenant data: never logged, never in a metric label,
+  and only their size and digest in a span.
 
 ## Configuration and environment variables
 

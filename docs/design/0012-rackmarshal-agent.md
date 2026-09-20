@@ -103,10 +103,15 @@ the host is re-enrolled.
   bundle's `coreKeyId` and revocation list are recorded with the same monotonicity: a bundle may move the
   current core key forward or add revocations, never move back or drop them, so a replayed older bundle
   cannot restore a retired or revoked key.
-- **Validate** each resource against its JSON Schema, embedded from `rackmarshal-api-schema`.
+- **Validate** each resource against its JSON Schema — embedded from `rackmarshal-api-schema` for built-in
+  kinds, and from the plugin's provisioner bundle for a plugin kind
+  ([0021](0021-plugin-extensibility.md)). The provisioner validated the same specs before signing; the
+  agent validates them again on accept, because neither end relies on the other having checked. A
+  failure rejects the bundle and keeps the previous generation.
 - **Policy** — OPA evaluates, in order, the embedded agent baseline (for example, deny kinds disabled in
   local config), root-owned local policies in `/etc/rackmarshal-agent/policy.d/*.rego` that may only add
-  denials, and the bundle's `host` policies. Same contract, capability filter, and 500 ms deadline as
+  denials, each verified plugin's `host` policies scoped to the kinds that plugin was granted
+  (0021), and the bundle's `host` policies. Same contract, capability filter, and 500 ms deadline as
   0011; an error or any `deny` rejects the whole bundle.
 - **Scripts** — `host`-phase Tengo with the same allowlist and limits as 0011. The `rackmarshal` module exposes
   read-only host `facts()`; scripts compute values and never act.
@@ -122,8 +127,13 @@ the host is re-enrolled.
   others.
 - **Cadence** — on every new bundle, and every `enforce.interval` (default 30 minutes) to correct drift.
   `mode: audit` observes and diffs only.
-- **Reports** — per resource: status, a digest of observed state (never file content), timings, and a
-  `reportId`, posted to `POST /provisioner/v1alpha1/enforcement-reports`.
+- **Reports** — per resource: status, a digest of observed state (never file content), timings, a
+  `reportId`, and a plugin's bounded `result_json` when it returned one
+  ([0021](0021-plugin-extensibility.md)), posted to
+  `POST /provisioner/v1alpha1/enforcement-reports`. The agent validates a result against the schema in
+  that plugin's bundle before queueing it, caps a report's results at 256 KiB, and sets
+  `result_truncated` rather than dropping the report. Results count against `outbox.maxBytes` like
+  anything else in the spool.
 
 #### Inventory
 
@@ -549,6 +559,8 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 - [sigstore/root-signing](https://github.com/sigstore/root-signing) — Sigstore's TUF repository,
   published at `https://tuf-repo-cdn.sigstore.dev`.
 - [Sigstore cosign](https://docs.sigstore.dev/cosign/signing/overview/).
+- [0021 — Plugin extensibility](0021-plugin-extensibility.md) — the result round trip, plugin-supplied
+  policy, and the bidirectional validation rule.
 - [OPA `v1/rego`](https://pkg.go.dev/github.com/open-policy-agent/opa/v1/rego) and
   [Tengo](https://github.com/d5/tengo).
 - [go-tpm](https://github.com/google/go-tpm), [certtostore](https://github.com/google/certtostore), and

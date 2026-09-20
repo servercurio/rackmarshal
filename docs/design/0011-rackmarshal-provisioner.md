@@ -66,6 +66,7 @@ components and reference material from those types rather than from hand-written
 | `Policy`           | A Rego module with a phase: `admission`, `dispatch`, or `host`                  |
 | `Script`           | Tengo source with a phase (`render` or `host`), declared inputs, and limits     |
 | `DeviceConnection` | Driver, address, pinned TLS or SSH identity, and a credential reference         |
+| `Plugin`           | A plugin's artifacts at one version: agent half, required bundle, optional service |
 | Resource kinds     | `File`, `Package`, `Service`, … for hosts; driver-defined kinds for devices     |
 
 Every resource inside a `DirectiveSet` is itself an `apiVersion`/`kind` document, so one validator
@@ -153,15 +154,21 @@ accepts its signature for the pin's publisher identity
 ([0012](0012-rackmarshal-agent.md#sigstore-verifier-measurements) records why the agent binary links no
 verifier).
 
-- **Import** — creating or updating an `AgentPlugin` ([0014](0014-rackmarshal-agent-plugins.md)) downloads
+- **Import** — creating or updating a `Plugin` ([0014](0014-rackmarshal-agent-plugins.md)) downloads
   `plugins-index.json`, the plugin manifest, and each listed asset's `.sigstore.json` bundle, and
   verifies them with [sigstore-go](https://github.com/sigstore/sigstore-go) `pkg/verify` against the
   referenced `PluginPublisher`: the keyless issuer and structured identity (repository, workflow, and
   ref) or its public key, a transparency-log entry, and an SCT for keyless certificates. Each asset
-  digest must equal both its index entry and the `AgentPlugin` pin.
+  digest must equal both its index entry and the `Plugin` pin.
+- **Bundle** — every `Plugin` carries a provisioner bundle, and a document without one fails import
+  ([0021](0021-plugin-extensibility.md)). The bundle is verified like any other asset and then checked
+  against the plugin it belongs to: a `resource:` capability with no matching schema fails
+  `schema_missing`, and a schema with no matching capability fails `schema_unclaimed`, so a bundle can
+  neither leave a declared kind unvalidated nor smuggle a definition for a kind the plugin was never
+  granted. Its schemas and compiled policy land in `plugin_bundles`.
 - **Record** — verified digests, signer identity, Rekor log index, and integrated time go into
-  `plugin_verifications` and the audit log. Only verified digests can appear as plugin pins in a
-  bundle; anything else fails admission with `plugin_not_verified`.
+  `plugin_verifications`, one row per artifact, and the audit log. Only verified digests can appear as
+  plugin pins in a bundle; anything else fails admission with `plugin_not_verified`.
 - **Pins** — each bundle pin carries the plugin name, version, per-platform SHA-256, and the publisher
   identity verified at import: the keyless issuer, repository, workflow, and refs, or the public key.
   The host validator checks the same identity before install ([0012](0012-rackmarshal-agent.md)).
@@ -170,7 +177,7 @@ verifier).
   envelope on the host ([0014](0014-rackmarshal-agent-plugins.md)).
 - **Trusted root** — proposed: refresh `trusted_root.json` through Sigstore's TUF repository
   (sigstore-go `pkg/tuf`), with a packaged fallback for air-gapped environments.
-- **Withdrawal** — removing an `AgentPlugin` version or its `PluginPublisher` drops its pins from the
+- **Withdrawal** — removing a `Plugin` version or its `PluginPublisher` drops its pins from the
   next bundle generation, so agents stop launching it once they accept that generation.
 
 #### Reconciliation loop
@@ -203,7 +210,13 @@ until it exists, the resync interval covers them.
   (`id`, `name`, `tier`), `endpoint` (`id`, `labels`, `facts`), and `now`. Errors, timeouts, and
   non-set results deny.
 - **Layers** — platform policies embedded in the binary are evaluated first and cannot be disabled by
-  tenants; tenant `Policy` documents follow. Both must allow.
+  tenants; plugin policies from each verified provisioner bundle follow
+  ([0021](0021-plugin-extensibility.md)); tenant `Policy` documents last. All three must allow.
+- **Plugin scoping** — a plugin's policy is evaluated only against resources whose kind is in the
+  `resource:` capabilities that plugin was granted, and the service filters `input` before evaluation
+  rather than trusting the policy to scope itself. A plugin policy may only define `deny`, so installing
+  a plugin can never widen what the platform or a tenant allows. Plugin modules compile once per plugin
+  version alongside the tenant's and are cached with the rest of that version's verified artifacts.
 - **Builtins** — `rego.Capabilities` removes `http.send`, `net.lookup_ip_addr`, `opa.runtime`,
   `rand.intn`, `uuid.rfc4122`, and `time.now_ns` (time comes from `input.now`), so a policy using them
   fails to compile. `rego.StrictBuiltinErrors(true)`; print statements only in `development`.
@@ -231,6 +244,28 @@ deny contains {"code": "command_denied", "message": msg} if {
 - **Host functions** — a `rackmarshal` module with `facts()` (immutable endpoint facts), `input()`, and
   `fail(message)`. Results must be JSON-encodable and are schema-validated like any other resource.
 
+#### Plugin host
+
+Optional, and behind a build tag: a plugin's required bundle is validated and evaluated with the
+jsonschema, OPA, and sigstore-go this service already links, so the default build policies every plugin
+kind while linking no gRPC at all. Only a plugin that ships a provisioner service needs the host, which
+brings 0013's go-plugin and gRPC stack with it ([0021](0021-plugin-extensibility.md)).
+
+A provisioner service runs as a separate process, never in this address space: a sidecar container on
+`kubernetes`, a `rackmarshal-provisioner-plugin-<name>.service` unit on `package`, an SCM service on
+`windows`, each on a local socket or named pipe that binds no port. It receives a capability grant
+(`validate`, `interpret`, `propose`) the same way an agent half does, holds no database credentials, and
+has no network grant by default.
+
+`InterpretResult` runs after a report is accepted and validated, and its conditions merge into
+`endpoint_status`. `Propose` output is desired state like any other: it is written as a
+`document_revisions` entry attributed to the plugin and must pass admission, the plugin's own policy, and
+the tenant's before it can be dispatched. A plugin proposes; it never applies.
+
+Each replica runs its own plugin processes, and work reaches one only through the replica already holding
+that row's lease, so plugins add no coordination beyond
+[the reconciliation queue](CONVENTIONS.md#running-multiple-replicas).
+
 #### Agentless drivers
 
 ```go
@@ -244,7 +279,8 @@ type Driver interface {
 
 - **Built in, compiled in** — `http` (REST and JSON device and cloud APIs on `net/http`), `ssh` (CLI
   over `golang.org/x/crypto/ssh`), and `netconf` ([RFC 6241](https://www.rfc-editor.org/rfc/rfc6241) over
-  SSH on `encoding/xml`). A new driver needs its own design note with its dependency cost.
+  SSH on `encoding/xml`). A new built-in driver needs its own design note with its dependency cost; a
+  third party extends the service through a plugin instead ([0021](0021-plugin-extensibility.md)).
 - **Safety** — one lease per device, a per-connection concurrency cap, and per-call timeouts.
   `DirectiveSet.spec.mode: audit` runs `Observe` and `Plan` only.
 - **Observed state** is written back to `rackmarshal-inventory` through its `internal` API (0009), so both
@@ -296,8 +332,9 @@ key.
 | `directive_bundles`    | `endpoint_id`, `generation`, `digest`, `envelope` (bytea), `not_after`; last 10 kept       |
 | `reconcile_queue`      | `endpoint_id`, `reason`, `due_at`, `lease_owner`, `lease_expires_at`, `attempts`           |
 | `endpoint_status`      | path, `applied_generation`, drift (`in_sync`, `drifted`, `failed`, `unknown`), conditions  |
-| `enforcement_reports`  | monthly partitions, 30-day retention; digests of observed state, never content             |
-| `plugin_verifications` | `agent_plugin_id`, `platform`, `sha256`, signer identity, Rekor log index, integrated time |
+| `enforcement_reports`  | monthly partitions, 30-day retention; digests of observed state, plus bounded `result_json` |
+| `plugin_verifications` | `plugin_id`, `artifact`, `platform`, `sha256`, signer identity, Rekor log index, integrated time |
+| `plugin_bundles`       | per plugin version: verified schemas and compiled policy, keyed by bundle digest            |
 | `audit_events`         | append-only: principal, action, document, policy decision                                  |
 
 #### Scaling
@@ -315,6 +352,14 @@ stating:
   would each try to create next month's partition, and all but one would fail on the duplicate
   relation. It takes `pg_try_advisory_lock` and skips the tick when another replica holds it, running
   far enough ahead of the month boundary that a skipped tick is harmless.
+
+**Plugin results.** `enforcement_reports` carries a bounded `result_json` beside the observed digest
+([0021](0021-plugin-extensibility.md)). The rule that replaces "never content" is *never file content;
+bounded plugin results, validated against the schema in the plugin's bundle* — the control it was always
+providing, without foreclosing a structured result. The payload is validated on receipt, before
+`InterpretResult` sees it, and an invalid one is stored as a resource-level failure rather than
+rejecting the report. Results are tenant data and are handled as 0009 handles facts: never logged, never
+in a metric label, only size and digest in a span.
 
 Credentials for devices are **never** stored here or in bundles: `credentialRef` names a secret that a
 `SecretProvider` resolves at apply time. The first provider reads files mounted by
@@ -343,7 +388,7 @@ placed in a policy input, a script value, or a rendered resource.
   process. Agents verify the chain and SPIFFE ID ([0012](0012-rackmarshal-agent.md)).
 - **Plugin releases** — Sigstore verification runs at import in this service, and again on hosts in the
   core validator against the identity in each pin (0012). `PluginPublisher` documents are audited like
-  policies, and writing them is a separate permission from `AgentPlugin`.
+  policies, and writing them is a separate permission from `Plugin`.
 - **Devices** — TLS verification is mandatory and SSH host keys are pinned in `DeviceConnection`.
   Skipping either is the last-resort feature `insecure-device-transport`.
 
@@ -377,6 +422,11 @@ from [CONVENTIONS.md](CONVENTIONS.md).
 |------------------------------|--------------------------------------------------|------------------------------|
 | `reconcile.workers`          | `RACKMARSHAL_PROVISIONER_RECONCILE_WORKERS`            | `8`                          |
 | `reconcile.resyncInterval`   | `RACKMARSHAL_PROVISIONER_RECONCILE_RESYNC_INTERVAL`    | `15m`                        |
+| `plugins.enabled`            | `RACKMARSHAL_PROVISIONER_PLUGINS_ENABLED`              | `true`                       |
+| `plugins.socketDir`          | `RACKMARSHAL_PROVISIONER_PLUGINS_SOCKET_DIR`           | `/run/rackmarshal-provisioner/plugins` |
+| `plugins.startTimeout`       | `RACKMARSHAL_PROVISIONER_PLUGINS_START_TIMEOUT`        | `30s`                        |
+| `plugins.callTimeout`        | `RACKMARSHAL_PROVISIONER_PLUGINS_CALL_TIMEOUT`         | `10s`                        |
+| `plugins.result.maxBytes`    | `RACKMARSHAL_PROVISIONER_PLUGINS_RESULT_MAX_BYTES`     | `16384`                      |
 | `reconcile.leaseDuration`    | `RACKMARSHAL_PROVISIONER_RECONCILE_LEASE_DURATION`     | `60s`                        |
 | `policy.evalTimeout`         | `RACKMARSHAL_PROVISIONER_POLICY_EVAL_TIMEOUT`          | `500ms`                      |
 | `script.maxAllocs`           | `RACKMARSHAL_PROVISIONER_SCRIPT_MAX_ALLOCS`            | `100000`                     |
@@ -425,8 +475,11 @@ support the current and previous `apiVersion`.
 - **On-host verification only** — without an import check, an unverifiable release could be pinned and
   would fail on every host instead of at admission; see
   [0012](0012-rackmarshal-agent.md#sigstore-verifier-measurements).
-- **Out-of-process drivers over go-plugin** — isolates faults, but brings gRPC into a service against
-  the [API style convention](CONVENTIONS.md#api-contract-and-style).
+- **Out-of-process drivers over go-plugin, in this process** — isolates faults, but would bring gRPC into
+  the service's own address space. [0021](0021-plugin-extensibility.md) instead runs a plugin service as a
+  separate process on a local socket, which keeps the isolation; the
+  [API style convention](CONVENTIONS.md#api-contract-and-style) was widened to cover a host and its
+  plugins rather than read around.
 - **A job queue library such as River** — more features, but a dependency for what `SKIP LOCKED` does.
 - **CUE or Jsonnet instead of Tengo** — ruled out by 0001.
 - **Tengo v2.17.0 tag** — a clean tag, but missing fixes; kept as the fallback.
@@ -437,7 +490,10 @@ support the current and previous `apiVersion`.
 - **Principal propagation** — the header or token the gateway forwards, and the permission names (0006,
   0008).
 - **Secret providers** beyond mounted files — Vault, cloud secret managers?
-- **Plugin-defined kinds** — who publishes their schemas: `rackmarshal-api-schema` or the plugin (0013)?
+- **Plugin build tag** — is the tagged plugin host on or off in released artifacts, given that every
+  plugin is policed from its bundle either way ([0021](0021-plugin-extensibility.md))?
+- **Proposal loops** — a plugin whose `Propose` output produces a report that produces another proposal.
+  A generation cap and a depth limit are the obvious controls; which, and what value?
 - **Bundle validity** — is 7 days right for offline agents, and should it be per tenant?
 - **Tengo maintenance** — pin upstream pseudo-versions, or fork under `servercurio`?
 - **Approvals** — do `production` changes need a second approver before dispatch?
@@ -462,6 +518,8 @@ support the current and previous `apiVersion`.
 - [sigstore-go](https://github.com/sigstore/sigstore-go) —
   [`verify`](https://pkg.go.dev/github.com/sigstore/sigstore-go/pkg/verify) and
   [`tuf`](https://pkg.go.dev/github.com/sigstore/sigstore-go/pkg/tuf) packages; measured in 0012.
+- [0021 — Plugin extensibility](0021-plugin-extensibility.md) — the `Plugin` document, the required
+  provisioner bundle, the plugin host, and the result round trip.
 - [PostgreSQL `FOR UPDATE SKIP LOCKED`](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE)
   and [row security policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html).
 - [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110) — conditional requests;
