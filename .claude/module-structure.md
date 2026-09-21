@@ -30,6 +30,9 @@ directories as they are first needed rather than adding empty placeholders.
 - `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `LICENSE` — Root community
   and policy documents.
 - `.claude/` — Agent guidance (this file and its siblings) plus `settings.json`.
+  `claude-session.zsh` is the shell integration that names each Claude Code session after its
+  repository (`org/repo`) and gives it a color hashed from that name; install it by copying to
+  `${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/claude-session.zsh`, which oh-my-zsh auto-sources.
 
 ## Intended Hugo layout (create as needed)
 
