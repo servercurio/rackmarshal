@@ -2,12 +2,12 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0008 — rackmarshal-gateway
+# 0008 — gateway
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
-- **Summary:** `rackmarshal-gateway` is Rackmarshal's only edge. An operator ingress accepts bearer tokens over the
+- **Summary:** `gateway` is Rackmarshal's only edge. An operator ingress accepts bearer tokens over the
   starter's TLS 1.2+ configuration, and a separate agent ingress requires mutual TLS 1.3 with per-agent
   certificates. It routes only operations the contract exposes to that ingress, verifies tokens and
   revocation and fails closed, and forwards requests to services over mutual TLS. It is built on Echo,
@@ -19,7 +19,7 @@
 
 ## Context & goals
 
-0001 routes all `rackmarshal-sdk` traffic through `rackmarshal-gateway`, which "enforces authentication and
+0001 routes all `sdk` traffic through `gateway`, which "enforces authentication and
 authorization before routing"
 ([Architecture at a glance](0001-project-repositories.md#architecture-at-a-glance)).
 Agents use a dedicated mutual-TLS ingress, separate from the operator and third-party entry point, and the
@@ -28,7 +28,7 @@ enrollment route is the only one there that accepts a connection without a clien
 certificates with OCSP, falls back to the CRL, caches both until `nextUpdate` (1 hour and 24 hours), and
 fails closed. Tokens carry the environment ID, and every Rackmarshal certificate carries a SPIFFE ID
 ([Environment identity](0001-project-repositories.md#environment-identity)). 0002 leaves routing, rate
-limits, and principal propagation to this document ([0002](0002-rackmarshal-api-schema.md)).
+limits, and principal propagation to this document ([0002](0002-api-schema.md)).
 
 **Goals**
 
@@ -39,10 +39,10 @@ limits, and principal propagation to this document ([0002](0002-rackmarshal-api-
 
 **Non-goals**
 
-- Token formats, signing keys, RBAC model, and CA operation — [0006](0006-rackmarshal-identity.md).
-- Login flows and the SSO site — [0007](0007-rackmarshal-sso.md).
-- Fine-grained, resource-level authorization — each service (e.g. [0009](0009-rackmarshal-inventory.md)).
-- Load balancers, DNS, and deployment topology — [0005](0005-rackmarshal-infrastructure.md).
+- Token formats, signing keys, RBAC model, and CA operation — [0006](0006-identity.md).
+- Login flows and the SSO site — [0007](0007-sso.md).
+- Fine-grained, resource-level authorization — each service (e.g. [0009](0009-inventory.md)).
+- Load balancers, DNS, and deployment topology — [0005](0005-infrastructure.md).
 
 ## Proposal
 
@@ -51,11 +51,11 @@ limits, and principal propagation to this document ([0002](0002-rackmarshal-api-
 - **Operator ingress** — TLS 1.2+, bearer tokens, `operator`-audience operations and the `/sso/` token
   endpoints.
 - **Agent ingress** — TLS 1.3 with client certificates, `agent`-audience operations, one enrollment route.
-- **Routing** — exact operation matching built from `rackmarshal-api-schema`; the first path segment selects
+- **Routing** — exact operation matching built from `api-schema`; the first path segment selects
   the upstream service.
 - **Edge security** — token verification, certificate revocation, rate limits, header hygiene.
 - **Principal propagation** — `X-Rackmarshal-Principal` to services over mutual TLS.
-- **Correlation** — `X-Request-Id`, W3C Trace Context, access logs, and metrics through `rackmarshal-common`.
+- **Correlation** — `X-Request-Id`, W3C Trace Context, access logs, and metrics through `common`.
 
 ### Interfaces
 
@@ -68,9 +68,9 @@ limits, and principal propagation to this document ([0002](0002-rackmarshal-api-
 | `health`   | 8080         | none, private address only | none; `/livez`, `/readyz`, `/healthz` only    |
 
 Both TLS listeners serve the gateway's service certificate,
-`spiffe://<environment-id>/service/rackmarshal-gateway`, issued by `rackmarshal-identity` and renewed by
-`rackmarshal-sdk`'s `enroll.Renewer`. `rackmarshal-sdk` clients refuse a gateway without that ID
-([0003](0003-rackmarshal-sdk.md)). The operator certificate also needs the public DNS
+`spiffe://<environment-id>/service/gateway`, issued by `identity` and renewed by
+`sdk`'s `enroll.Renewer`. `sdk` clients refuse a gateway without that ID
+([0003](0003-sdk.md)). The operator certificate also needs the public DNS
 names as SANs (see Open questions). The starter's hardened TLS 1.2 configuration
 (`hardenedTLSConfig` in `go-echo-starter`) is kept for the operator listener. The starter's plain-HTTP
 redirect and ACME `autocert` paths are removed. Both TLS listeners must sit behind TCP pass-through load
@@ -79,13 +79,13 @@ balancing, because TLS terminates at the gateway.
 #### Routing and audience enforcement
 
 Proposed: **deny by default, with exact operation matching.** At startup the gateway reads every
-document from `rackmarshal-api-schema`'s `pkg/openapi` and builds two Echo routers:
+document from `api-schema`'s `pkg/openapi` and builds two Echo routers:
 
 1. For each operation, the method and path template (`{endpointId}` becomes `:endpointId`) go into the
    `operator` router if `x-rackmarshal-audience` contains `operator`, and into the `agent` router if it
    contains `agent`. Operations whose only audience is `internal` go into neither.
-2. The first path segment selects the upstream: `inventory` → `rackmarshal-inventory`, `identity` →
-   `rackmarshal-identity`, `provisioner` → `rackmarshal-provisioner`. An operation whose segment has no configured
+2. The first path segment selects the upstream: `inventory` → `inventory`, `identity` →
+   `identity`, `provisioner` → `provisioner`. An operation whose segment has no configured
    upstream fails startup.
 3. Anything unmatched returns `404` with the problem code `route_not_found`, so an `internal` operation
    and a nonexistent one look the same from outside.
@@ -96,13 +96,13 @@ and the upstream service never interpret a request differently, a risk the `Reve
 documentation warns about.
 
 Two non-contract route families exist. `GET /gateway/v1alpha1/environment` returns
-`{ "id", "name", "tier" }` without authentication, so `rackmarshal-cli` can record a profile's name and tier
-after pinning the certificate ([0010](0010-rackmarshal-cli.md)). The second is the OIDC, SAML, and PKI family
-under `/identity/`, which `rackmarshal-identity` owns and serves (0006): the issuer's `/authorize`, `/token`,
+`{ "id", "name", "tier" }` without authentication, so `cli` can record a profile's name and tier
+after pinning the certificate ([0010](0010-cli.md)). The second is the OIDC, SAML, and PKI family
+under `/identity/`, which `identity` owns and serves (0006): the issuer's `/authorize`, `/token`,
 `/device-authorization`, `/revoke`, `/.well-known/openid-configuration`, and `/jwks.json`, the SAML
 bindings, and `/identity/pki/<environment-id>/{ca.pem,crl.der,ocsp}`. The gateway proxies them by path
 prefix rather than from the contract, because they are standards-defined and deliberately outside it
-(0002). `rackmarshal-sso` serves only browser routes and holds no token-signing keys (0007), so no token
+(0002). `sso` serves only browser routes and holds no token-signing keys (0007), so no token
 endpoint is routed to it. This keeps every credential exchange on the environment-pinned host.
 
 #### Reverse proxy
@@ -151,7 +151,7 @@ than the inbound header, and only then applies `SetHeaders`. The gateway binds o
 
 ```go
 proxy.With(proxy.Config{
-    Target:        inventoryURL,                    // https://rackmarshal-inventory.<internal>:8443
+    Target:        inventoryURL,                    // https://inventory.<internal>:8443
     Transport:     telemetry.WrapTransport(upstreamTransport), // sdk tlsconfig + common spans
     StripRequest:  []string{"Authorization", "Cookie"},
     StripPrefixes: []string{"X-Rackmarshal-"},
@@ -166,10 +166,10 @@ proxy.With(proxy.Config{
 })
 ```
 
-`upstreamTransport` uses `tlsconfig.Client` from `rackmarshal-sdk` with TLS 1.3, the environment roots, and
-`spiffe.Service("rackmarshal-inventory")` as the matcher. The gateway therefore verifies the upstream's trust
-domain and its exact service path, so a compromised `rackmarshal-provisioner` cannot answer for
-`rackmarshal-inventory`.
+`upstreamTransport` uses `tlsconfig.Client` from `sdk` with TLS 1.3, the environment roots, and
+`spiffe.Service("inventory")` as the matcher. The gateway therefore verifies the upstream's trust
+domain and its exact service path, so a compromised `provisioner` cannot answer for
+`inventory`.
 
 #### Principal propagation
 
@@ -182,10 +182,10 @@ base64url JSON of the verified identity.
 ```
 
 For agents, `type` is `agent`, `id` is the agent ID from the certificate, and `tenantId` comes from a
-cached lookup of the agent in `rackmarshal-identity` (an `internal` operation that 0006 defines). Services
-accept the header only when their mutual-TLS peer is `spiffe://<environment-id>/service/rackmarshal-gateway`,
+cached lookup of the agent in `identity` (an `internal` operation that 0006 defines). Services
+accept the header only when their mutual-TLS peer is `spiffe://<environment-id>/service/gateway`,
 and reject it from any other peer. Mutual TLS protects the header's integrity, and the bearer token never
-travels past the edge. A stdlib-only parser, proposed as `rackmarshal-sdk` `pkg/principal`, keeps every service
+travels past the edge. A stdlib-only parser, proposed as `sdk` `pkg/principal`, keeps every service
 consistent (see Open questions).
 
 #### Errors and headers
@@ -198,8 +198,8 @@ only to logs.
 
 ### Dependencies
 
-- **Rackmarshal** — `rackmarshal-api-schema` (embedded documents), `rackmarshal-sdk` (`spiffe`, `tlsconfig`, `revocation`,
-  `enroll`, `principal`), `rackmarshal-common` (`logging`, `environment`, `telemetry`).
+- **Rackmarshal** — `api-schema` (embedded documents), `sdk` (`spiffe`, `tlsconfig`, `revocation`,
+  `enroll`, `principal`), `common` (`logging`, `environment`, `telemetry`).
 - **New third-party module** — [`github.com/go-jose/go-jose/v4`](https://github.com/go-jose/go-jose)
   v4.1.5, for JWKS parsing and JWS verification. Its `go.mod` has no requirements, measured on 2026-09-15.
 - **Kept from the starter** — Echo v5.3.1, which links only `golang.org/x/time` (rate limiter),
@@ -211,7 +211,7 @@ only to logs.
 - **Removed from the starter** — `internal/database` (pgx, bun, goose), swaggo and `cmd/openapi-gen`
   (replaced by embedded contracts, per 0002), ACME `autocert`, and `Masterminds/semver`.
 - **Measured footprint** — the starter's `cmd/daemon` links 49 third-party modules (151 in
-  `go list -m all`). A throwaway module with the proposed set, plus `rackmarshal-common`'s measured OpenTelemetry
+  `go list -m all`). A throwaway module with the proposed set, plus `common`'s measured OpenTelemetry
   stack, links **23** (44 in `go list -m all`). Rackmarshal modules themselves are not yet published and are
   not counted.
 
@@ -236,7 +236,7 @@ authoritative control for what it protects.
 | Bucket | Why per-replica is acceptable |
 |---|---|
 | Operator, before and after auth | Capacity protection, not a security boundary; size it as `total / replicas` |
-| `/sso/` token endpoints | `rackmarshal-identity` enforces attempt counters centrally (0007) |
+| `/sso/` token endpoints | `identity` enforces attempt counters centrally (0007) |
 | Agent | The agent's certificate is revocable, and revocation is checked every request |
 | Agent enrollment | Enrollment tokens are single-use and redeem exactly once under concurrency (0006) |
 
@@ -254,21 +254,21 @@ what a load balancer draining one pod needs it to mean.
 
 #### Token verification (operator ingress)
 
-Token formats belong to [0006](0006-rackmarshal-identity.md). For JWT access tokens
+Token formats belong to [0006](0006-identity.md). For JWT access tokens
 ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)), the gateway enforces:
 
 - **Algorithm allowlist** — `ES256` only, and `typ` must be `at+jwt`, following
   [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725). `none`, HMAC, and embedded `jwk` or `x5u` headers
   are rejected.
-- **Keys** — the environment's JWKS, fetched from `rackmarshal-identity` over mutual TLS only.
+- **Keys** — the environment's JWKS, fetched from `identity` over mutual TLS only.
 - **Environment binding** — `iss` must equal `auth.issuer`, which must contain `environment.id` (checked at
-  startup). `aud` must contain `spiffe://<environment-id>/service/rackmarshal-gateway`. A token from another
+  startup). `aud` must contain `spiffe://<environment-id>/service/gateway`. A token from another
   environment therefore fails on both issuer and audience.
 - **Time** — `exp` is required, `nbf` and `iat` are honored, and clock skew is at most 60 seconds.
 - **Coarse authorization** — a `bearerAuth` security requirement lists the role names the operation
   needs, which OpenAPI 3.1 permits for non-OAuth schemes. The gateway requires at least one of them in
   `roles`. Tenant- and resource-level checks stay in services.
-- **Opaque API tokens**, if 0006 chooses them, go to `rackmarshal-identity` introspection
+- **Opaque API tokens**, if 0006 chooses them, go to `identity` introspection
   ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)) over mutual TLS, with results cached for at most
   30 seconds.
 
@@ -282,13 +282,13 @@ Token formats belong to [0006](0006-rackmarshal-identity.md). For JWT access tok
   matched operation is the agent enrollment operation that 0002 marks `security: []`. The allowlist holds
   one operation ID, tested from the contract. The enrollment route's body limit is 16 KiB, and its rate
   limit is the strictest.
-- **Revocation** — `revocation.Checker` from `rackmarshal-sdk` implements 0001 exactly: OCSP first, then the
+- **Revocation** — `revocation.Checker` from `sdk` implements 0001 exactly: OCSP first, then the
   CRL, each cached until `nextUpdate`, rejecting when neither is available within the window. The gateway
   re-checks the cached status on every request, not only at handshake, so a long-lived HTTP/2 connection
   is cut off once its certificate is revoked.
 - **Responder addresses** — OCSP and CRL URLs come from gateway configuration (the internal
-  `rackmarshal-identity` endpoints), not from certificate AIA or CDP extensions, so agent-supplied certificates
-  cannot steer the gateway's outbound requests. This needs a `revocation` option in `rackmarshal-sdk`.
+  `identity` endpoints), not from certificate AIA or CDP extensions, so agent-supplied certificates
+  cannot steer the gateway's outbound requests. This needs a `revocation` option in `sdk`.
 
 #### Rate limiting
 
@@ -331,7 +331,7 @@ from private networks.
 
 ### Logging & telemetry
 
-- **Access logs** — through `rackmarshal-common`, with `http.request.method`, `http.route` (the contract
+- **Access logs** — through `common`, with `http.request.method`, `http.route` (the contract
   template, never the raw path), `http.response.status_code`, and `client.address`, plus `rackmarshal.ingress`,
   `rackmarshal.request.id`, `rackmarshal.upstream.service`, `rackmarshal.principal.type`, `rackmarshal.tenant.id`,
   `rackmarshal.agent.id`, and `rackmarshal.auth.failure_reason`. Tokens, the principal header, and query strings are
@@ -340,7 +340,7 @@ from private networks.
   Otherwise the gateway generates a 26-character random base32 ID. The ID is forwarded upstream and echoed
   on every response.
 - **Tracing** — `WrapHandler` runs with `WithTrustIncoming(false)` on both external ingresses, starting a
-  new trace linked to the caller's span ([0004](0004-rackmarshal-common.md)). `WrapTransport` injects
+  new trace linked to the caller's span ([0004](0004-common.md)). `WrapTransport` injects
   `traceparent` upstream, and inbound `tracestate` is not forwarded.
 - **Metrics** — `http.server.request.duration` plus `rackmarshal.gateway.auth.failures` (by reason),
   `rackmarshal.gateway.revocation.checks` (by source `ocsp`, `crl`, or `cache`, and by result),
@@ -377,12 +377,12 @@ omitted here.
   else. Seeding does not propagate later fixes, so a hardening change to the starter's middleware has to be
   ported deliberately; the gateway's own smuggling tests (below) are what catch a stale copy.
 - **Contract coupling** — a new `operator` or `agent` operation is reachable only after the gateway
-  upgrades `rackmarshal-api-schema`. A 100-series workflow opens that pull request on each schema release, like
-  `rackmarshal-sdk`'s regeneration workflow.
+  upgrades `api-schema`. A 100-series workflow opens that pull request on each schema release, like
+  `sdk`'s regeneration workflow.
 - **Deployment** — the gateway ships every artifact in
   [CONVENTIONS — Deployment artifacts](CONVENTIONS.md#deployment-artifacts): the signed multi-arch image,
   the starter's Helm chart in `charts/rackmarshal-gateway/` with the enrollment init container, signed deb and
-  rpm packages with a hardened systemd unit, and a signed NSIS installer. [0005](0005-rackmarshal-infrastructure.md)
+  rpm packages with a hardened systemd unit, and a signed NSIS installer. [0005](0005-infrastructure.md)
   deploys them to Kubernetes, container, and OS targets with Ansible.
 - **Versioning** — `v0.x`, per [CONVENTIONS.md](CONVENTIONS.md).
 
@@ -390,7 +390,7 @@ omitted here.
 
 - **Audience matrix** — generated from the contract. Every `internal`-only operation returns `404` on both
   ingresses, every `operator` operation returns `404` on the agent ingress, and the reverse.
-- **TLS** — with `rackmarshal-sdk` `sdktest`: TLS 1.2 rejected on the agent ingress; missing, expired,
+- **TLS** — with `sdk` `sdktest`: TLS 1.2 rejected on the agent ingress; missing, expired,
   wrong-trust-domain, and non-agent certificates rejected on every route except enrollment; revoked
   certificates rejected at handshake, on resumption, and mid-connection; OCSP down falls back to the CRL,
   and both down beyond `nextUpdate` rejects.
@@ -419,7 +419,7 @@ omitted here.
 - **Plain `net/http` without Echo** — removes one module, but gives up the starter's middleware, config,
   and rate limiter, and diverges from every other service.
 - **Envoy or another off-the-shelf proxy** — mature, but not Go, and it cannot build route tables from
-  `x-rackmarshal-audience` or use `rackmarshal-sdk`'s SPIFFE and revocation code without a control plane.
+  `x-rackmarshal-audience` or use `sdk`'s SPIFFE and revocation code without a control plane.
 - **Prefix routing on the first segment only**, leaving audience checks to services — simpler and needs no
   contract coupling, but one missed check in a service would expose `internal` operations.
 - **Forwarding the bearer token** so services re-verify it — defense in depth, but it spreads tokens and a
@@ -440,14 +440,14 @@ omitted here.
 
 ## Open questions
 
-- **Operator certificate** — may `rackmarshal-identity` add public DNS SANs to the gateway's service certificate,
+- **Operator certificate** — may `identity` add public DNS SANs to the gateway's service certificate,
   or does the operator ingress use a second environment-CA certificate? A WebPKI-terminating load balancer
   would break client pinning (the same question is open in 0003).
 - **Principal header** — accept `X-Rackmarshal-Principal` over mutual TLS, or forward tokens? Does
-  `pkg/principal` belong in `rackmarshal-sdk`?
+  `pkg/principal` belong in `sdk`?
 - **Unauthenticated operations** — 0002's lint allowlist names only enrollment and health. Add
   `GET /gateway/v1alpha1/environment`?
-- **Agent tenant lookup** — cache TTL, and whether disabling an agent in `rackmarshal-identity` should also
+- **Agent tenant lookup** — cache TTL, and whether disabling an agent in `identity` should also
   revoke its certificate.
 - **Role names** in security requirements, or a dedicated `x-rackmarshal-permission` extension?
 
@@ -455,8 +455,8 @@ omitted here.
 
 - [0001 — Project Repositories](0001-project-repositories.md) — architecture, agent enrollment,
   environment identity, resolved decisions.
-- [0002 — rackmarshal-api-schema](0002-rackmarshal-api-schema.md), [0003 — rackmarshal-sdk](0003-rackmarshal-sdk.md),
-  [0004 — rackmarshal-common](0004-rackmarshal-common.md), [CONVENTIONS.md](CONVENTIONS.md).
+- [0002 — api-schema](0002-api-schema.md), [0003 — sdk](0003-sdk.md),
+  [0004 — common](0004-common.md), [CONVENTIONS.md](CONVENTIONS.md).
 - [go-echo-starter](https://github.com/servercurio/go-echo-starter) — `internal/application/application_tls.go`
   (`hardenedTLSConfig`, `LimitListener`), `application_proxy.go` (implicit private-range trust),
   `config_ratelimit.go`, `config_security.go`.

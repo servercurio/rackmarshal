@@ -15,8 +15,8 @@
   `brand/tokens.css`; the reference page is `brand/index.html`.
 
 > An initial draft. The surfaces that consume this are [0016](0016-web-ui-architecture.md),
-> [0017](0017-rackmarshal-portal.md), [0018](0018-rackmarshal-console.md), and the login site in
-> [0007](0007-rackmarshal-sso.md).
+> [0017](0017-portal.md), [0018](0018-console.md), and the login site in
+> [0007](0007-sso.md).
 
 ## Context & goals
 
@@ -108,8 +108,8 @@ only place in the system where a label colour flips with the theme.
 
 A generic success/warning/error triple would not cover what these surfaces must show.
 
-**Endpoint drift** — the four values `rackmarshal-provisioner` stores in `endpoint_status`
-([0011](0011-rackmarshal-provisioner.md)), rendered as a pill with the word always present, never colour alone:
+**Endpoint drift** — the four values `provisioner` stores in `endpoint_status`
+([0011](0011-provisioner.md)), rendered as a pill with the word always present, never colour alone:
 
 | State     | Token      | Meaning                                       |
 |-----------|------------|-----------------------------------------------|

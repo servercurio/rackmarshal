@@ -2,14 +2,14 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0006 — rackmarshal-identity
+# 0006 — identity
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
-- **Summary:** `rackmarshal-identity` is the environment's authorization server and certificate authority. It
+- **Summary:** `identity` is the environment's authorization server and certificate authority. It
   implements a minimal OIDC provider and SAML IdP, stores accounts, tenants, RBAC, sessions, and API
-  tokens in PostgreSQL, and delegates login pages to `rackmarshal-sso`. Its intermediate CA issues agent,
+  tokens in PostgreSQL, and delegates login pages to `sso`. Its intermediate CA issues agent,
   service, and control-node certificates from enrollment tokens, or from projected service account
   tokens for services on Kubernetes, and publishes OCSP and CRLs, with keys in an HSM or KMS through
   PKCS#11.
@@ -20,7 +20,7 @@
 
 ## Context & goals
 
-0001 assigns `rackmarshal-identity` the internal SAML/OIDC IdP, accounts, API tokens, RBAC, tenancy, and
+0001 assigns `identity` the internal SAML/OIDC IdP, accounts, API tokens, RBAC, tenancy, and
 sessions ([Auth split](0001-project-repositories.md#auth-split)); the internal CA, enrollment tokens,
 and OCSP/CRL ([Agent enrollment](0001-project-repositories.md#agent-enrollment)); and environment-bound
 tokens and service certificate bootstrap
@@ -35,10 +35,10 @@ tokens and service certificate bootstrap
 
 **Non-goals**
 
-- Login pages, external IdP federation, and cookies — [0007](0007-rackmarshal-sso.md).
-- Request authentication at the edge and routing — [0008](0008-rackmarshal-gateway.md).
-- The offline root and environment creation — [0005](0005-rackmarshal-infrastructure.md).
-- Key storage on agents — [0012](0012-rackmarshal-agent.md).
+- Login pages, external IdP federation, and cookies — [0007](0007-sso.md).
+- Request authentication at the edge and routing — [0008](0008-gateway.md).
+- The offline root and environment creation — [0005](0005-infrastructure.md).
+- Key storage on agents — [0012](0012-agent.md).
 
 ## Proposal
 
@@ -58,19 +58,19 @@ tokens and service certificate bootstrap
 
 A single TLS 1.3 mutual-TLS listener on a private interface. Callers reach it three ways:
 
-- **`rackmarshal-gateway`** forwards `operator` and `agent` operations and the public protocol endpoints.
-- **`rackmarshal-sso`** and other services call `internal` operations directly with service certificates.
+- **`gateway`** forwards `operator` and `agent` operations and the public protocol endpoints.
+- **`sso`** and other services call `internal` operations directly with service certificates.
 - **Service enrollment** is the one route that accepts a connection without a client certificate
-  (`security: []`), because the enrolling service and `rackmarshal-gateway` have no certificate yet. This
+  (`security: []`), because the enrolling service and `gateway` have no certificate yet. This
   answers 0003's open question for services; agents still enroll through the gateway.
 
 #### Login delegation
 
 Proposed: the **login-challenge model** of [Ory Hydra](https://www.ory.com/docs/oauth2-oidc/custom-login-consent/flow).
 `/authorize` and the SAML SSO endpoint create a login challenge and redirect the browser to
-`rackmarshal-sso` with `login_challenge=<id>`. `rackmarshal-sso` authenticates the user, then accepts the challenge
-over mutual TLS, and the browser returns to `/authorize` to receive a code. `rackmarshal-identity` keeps all
-protocol logic; `rackmarshal-sso` keeps all pages and federation.
+`sso` with `login_challenge=<id>`. `sso` authenticates the user, then accepts the challenge
+over mutual TLS, and the browser returns to `/authorize` to receive a code. `identity` keeps all
+protocol logic; `sso` keeps all pages and federation.
 
 #### Protocol endpoints
 
@@ -113,26 +113,26 @@ No implicit or password grants, following the OAuth 2.0 security BCP
 | `POST /identity/v1alpha1/service-enrollment-tokens`           | internal   | mTLS, control node only |
 | `POST /identity/v1alpha1/service-enrollments`                 | internal   | none           |
 | `GET /identity/v1alpha1/cluster-issuers`                      | internal   | mTLS, control node only |
-| `GET/PUT /identity/v1alpha1/login-challenges/{challengeId}`   | internal   | mTLS, `rackmarshal-sso` only |
-| `POST /identity/v1alpha1/password-verifications`, `/webauthn-assertions` | internal | mTLS, `rackmarshal-sso` only |
-| `POST /identity/v1alpha1/federated-logins`                    | internal   | mTLS, `rackmarshal-sso` only |
-| `POST /identity/v1alpha1/device-approvals`                    | internal   | mTLS, `rackmarshal-sso` only |
-| `POST /identity/v1alpha1/token-introspections`                | internal   | mTLS, `rackmarshal-gateway` only |
+| `GET/PUT /identity/v1alpha1/login-challenges/{challengeId}`   | internal   | mTLS, `sso` only |
+| `POST /identity/v1alpha1/password-verifications`, `/webauthn-assertions` | internal | mTLS, `sso` only |
+| `POST /identity/v1alpha1/federated-logins`                    | internal   | mTLS, `sso` only |
+| `POST /identity/v1alpha1/device-approvals`                    | internal   | mTLS, `sso` only |
+| `POST /identity/v1alpha1/token-introspections`                | internal   | mTLS, `gateway` only |
 
 User codes, tokens, and passwords travel only in request bodies marked `x-rackmarshal-sensitive`, never in
 paths (CONVENTIONS). Tenancy comes from the token's principal, not the path (0002's proposal).
 
 The agent resource carries the agent ID, its tenant, host labels from the enrollment token, certificate
-serial and expiry, and enabled state. `rackmarshal-gateway` reads it as an `internal` operation to resolve an
-agent's tenant for `X-Rackmarshal-Principal` (0008), `rackmarshal-inventory` reads the host labels on first contact
-(0009), and `rackmarshal-cli` lists and revokes agents and enrollment tokens (0010). `DELETE` disables the
+serial and expiry, and enabled state. `gateway` reads it as an `internal` operation to resolve an
+agent's tenant for `X-Rackmarshal-Principal` (0008), `inventory` reads the host labels on first contact
+(0009), and `cli` lists and revokes agents and enrollment tokens (0010). `DELETE` disables the
 agent and revokes its certificate in the same transaction, so disabling takes effect within the
 revocation cache window rather than at certificate expiry.
 
 #### Tokens
 
 - **Access tokens** — JWT per [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), ES256, 10 minutes.
-  `iss` is the issuer URL above; `aud` is `spiffe://<environment-id>/service/rackmarshal-gateway`. Claims:
+  `iss` is the issuer URL above; `aud` is `spiffe://<environment-id>/service/gateway`. Claims:
   `sub` (principal ID), `client_id`, `scope`, `jti`, `amr`, `forge_tenant`, `forge_roles`. The gateway
   verifies locally against JWKS and rejects any `iss` or `aud` naming another environment.
 - **ID tokens** — for third-party OIDC relying parties only; never accepted as bearer tokens.
@@ -155,7 +155,7 @@ SHA-256 is stored.
 
 | Kind    | Bound to                                    | TTL default / max | Created by                |
 |---------|---------------------------------------------|-------------------|---------------------------|
-| agent   | environment, tenant, optional host labels   | 1h / 24h          | operator via `rackmarshal-cli`  |
+| agent   | environment, tenant, optional host labels   | 1h / 24h          | operator via `cli`  |
 | service | environment, `service/<repository>`, host, CSR public key | 15m / 1h | control node certificate |
 
 Redemption is one
@@ -165,19 +165,19 @@ in the enrollment transaction, so a token cannot be used twice.
 A service token is bound to a key, not only to a name: the control node generates the key pair on the
 target, registers `SHA-256(SubjectPublicKeyInfo)` when it requests the token, and `service-enrollments`
 refuses a CSR whose public key does not match. A stolen token is then useless without the private key
-that never left the host. This matters most for `service/rackmarshal-gateway`, whose certificate is what lets
+that never left the host. This matters most for `service/gateway`, whose certificate is what lets
 a peer assert `X-Rackmarshal-Principal` for any user or tenant (0008); issuing that identity additionally
 requires the token to be marked `approval: required`, redeemable only after a second operator approves
 it through `POST /identity/v1alpha1/service-enrollment-approvals`.
 
 #### Kubernetes service account enrollment
 
-Services on Kubernetes ([0005](0005-rackmarshal-infrastructure.md)) enroll with a projected service account
+Services on Kubernetes ([0005](0005-infrastructure.md)) enroll with a projected service account
 token instead of a service enrollment token, on the same `service-enrollments` operation. The request
 carries exactly one of `enrollmentToken` or `serviceAccountToken`, both `x-rackmarshal-sensitive`. Agents
 cannot use this path. Pods enroll on start, scale-out, and rescheduling without the control node.
 
-**Cluster issuer registry** — loaded from `kubernetes.clusterIssuersFile`, which `rackmarshal-infrastructure`
+**Cluster issuer registry** — loaded from `kubernetes.clusterIssuersFile`, which `infrastructure`
 renders from the inventory. There is no write API, so a registration arrives only through a signed
 commit and the control node, and each JWKS fingerprint is recorded at the environment's key ceremony.
 `GET cluster-issuers` returns the loaded entries and the file's SHA-256 so the control node can detect
@@ -193,10 +193,10 @@ clusters:
       file: /etc/rackmarshal-identity/clusters/east-1.jwks.json
       # discovery: { caFile: /etc/rackmarshal-identity/clusters/east-1-ca.pem, refresh: 1h }
     serviceAccounts:
-      - { namespace: rackmarshal-qa-east, name: rackmarshal-inventory, service: rackmarshal-inventory }
+      - { namespace: rackmarshal-qa-east, name: inventory, service: inventory }
 ```
 
-**Verification** — offline; `rackmarshal-identity` never calls a cluster's API server:
+**Verification** — offline; `identity` never calls a cluster's API server:
 
 1. **Header** — the token is at most 8 KiB, `alg` is `RS256` or `ES256`
    ([RFC 8725](https://www.rfc-editor.org/rfc/rfc8725)), and `none`, HMAC, and `jwk`, `jku`, `x5u`, or
@@ -206,7 +206,7 @@ clusters:
    discovery document over HTTPS verified only against `caFile`, is cached for `refresh`, and every key
    change is audited
    ([issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery)).
-3. **Audience** — `aud` must be exactly one value, `spiffe://<environment-id>/service/rackmarshal-identity`,
+3. **Audience** — `aud` must be exactly one value, `spiffe://<environment-id>/service/identity`,
    so a token for another environment or audience fails.
 4. **Age** — `exp`, `iat`, and `nbf` are required with 60 seconds of skew, and `now − iat` must not
    exceed `kubernetes.maxTokenAge` (10 minutes) whatever `exp` says. Projected tokens last at least 600 s
@@ -216,8 +216,8 @@ clusters:
    since 1.32 ([service account claims](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/)).
    `sub` must be `system:serviceaccount:<namespace>:<name>` and agree with those claims.
 6. **Mapping** — the service account must be listed for that cluster, and its `service` is the only
-   SPIFFE ID the certificate may carry: only `rackmarshal-inventory`'s service account obtains
-   `spiffe://<environment-id>/service/rackmarshal-inventory`. Any other name in the CSR fails.
+   SPIFFE ID the certificate may carry: only `inventory`'s service account obtains
+   `spiffe://<environment-id>/service/inventory`. Any other name in the CSR fails.
 
 **Replay** — issuance inserts `SHA-256(iss, jti)` into `service_account_enrollments` in the same
 transaction, so one token yields one certificate. A retry with the same token and the same CSR public
@@ -241,7 +241,7 @@ After enrollment the service renews over mutual TLS like any other service.
 | OCSP signer   | none; delegated responder (RFC 6960 §4.2.2.2) | `OCSPSigning`    | 7 days                       |
 
 All leaf keys are ECDSA P-256 CSRs (CONVENTIONS); a renewal must present a new key. Holders renew at
-two-thirds of the lifetime. On startup `rackmarshal-identity` issues its own service certificate from the
+two-thirds of the lifetime. On startup `identity` issues its own service certificate from the
 intermediate and renews it in-process (0001).
 
 #### Revocation
@@ -267,7 +267,7 @@ Measured on 2026-09-15 with throwaway modules (`go list -deps`, Go 1.27.1):
 | `golang.org/x/crypto` (`argon2`, `ocsp`)           | starter  | 0 new          | passwords, OCSP              |
 
 - **Starter stack kept** — Echo v5, pgx, bun, goose. swaggo is removed; the service serves the
-  embedded `rackmarshal-api-schema` document (0002).
+  embedded `api-schema` document (0002).
 - **PKCS#11 on every platform** — `pkcs11` covers on-premises HSMs, AWS CloudHSM
   ([PKCS#11 library](https://docs.aws.amazon.com/cloudhsm/latest/userguide/pkcs11-library.html)), and
   Google Cloud KMS through `libkmsp11`
@@ -286,8 +286,8 @@ Measured on 2026-09-15 with throwaway modules (`go list -deps`, Go 1.27.1):
 - **crewjam/saml** is the only maintained Go SAML IdP found; its five published advisories are fixed
   in 0.4.14 or earlier, but its last tag is v0.5.1 and its `go.mod` pins `goxmldsig` v1.4.0 while
   v1.6.1 is current. Rackmarshal requires the current `goxmldsig`.
-- **Rackmarshal** — `rackmarshal-api-schema`, `rackmarshal-sdk` (`pkg/spiffe`, `pkg/tlsconfig`, `pkg/revocation`),
-  `rackmarshal-common`.
+- **Rackmarshal** — `api-schema`, `sdk` (`pkg/spiffe`, `pkg/tlsconfig`, `pkg/revocation`),
+  `common`.
 
 ### Data & storage
 
@@ -328,13 +328,13 @@ PostgreSQL through the starter's pgx, bun, and goose migrations. Every tenant-sc
   input the database role cannot reach and the retention policy is what stops an anchor being replaced,
   so detection no longer depends on a reader having saved an earlier head. A failed anchor write is
   logged and retried rather than blocking audited operations, and the gap is itself visible in the
-  anchors as a missing interval. `rackmarshal-cli audit verify` ([0010](0010-rackmarshal-cli.md)) does the
+  anchors as a missing interval. `rackmarshal-cli audit verify` ([0010](0010-cli.md)) does the
   comparison with read access to the anchor account alone.
 - `sealed_key` is populated only for the KEK-sealed backend.
 
 #### Scaling
 
-`rackmarshal-identity` runs N replicas and elects nothing. Request handling is already stateless — every
+`identity` runs N replicas and elects nothing. Request handling is already stateless — every
 read and write goes to PostgreSQL — so the work is confined to four places where a single writer would
 otherwise be assumed, per
 [CONVENTIONS — Running multiple replicas](CONVENTIONS.md#running-multiple-replicas).
@@ -381,8 +381,8 @@ from a different replica validates it the same way.
   without an override.
 - **CA constraints** — the intermediate has path length 0 and a URI name constraint for the trust
   domain (0005), so even a misissued leaf cannot name another environment.
-- **Caller pinning** — internal operations check the caller's SPIFFE ID: `rackmarshal-sso` for login
-  operations, `rackmarshal-gateway` for introspection, `control-node/*` for service enrollment tokens and
+- **Caller pinning** — internal operations check the caller's SPIFFE ID: `sso` for login
+  operations, `gateway` for introspection, `control-node/*` for service enrollment tokens and
   cluster issuers.
 - **Brute force** — failed password, WebAuthn, and user-code attempts are counted per account and per
   source in PostgreSQL, with exponential delays rather than hard lockouts that attackers could abuse.
@@ -443,7 +443,7 @@ than one service.
 
 ### Build, release & versioning
 
-- Bootstrap from `go-echo-starter`; replace its logging with `rackmarshal-common` and its OpenAPI generator
+- Bootstrap from `go-echo-starter`; replace its logging with `common` and its OpenAPI generator
   with the embedded contract.
 - **Builds** — release binaries are built natively per platform with `CGO_ENABLED=1`, on Linux
   `amd64`/`arm64`, Windows `amd64`, and macOS `arm64` runners, so `pkcs11` is available everywhere.
@@ -451,12 +451,12 @@ than one service.
   runner and C toolchain. The OCI image is also a cgo build, produced per architecture on a native
   runner rather than cross-compiled, so `pkcs11` — the default backend — works in the published
   container. Linux binaries and the image link glibc, so they are built on the oldest target in the
-  support matrix — Enterprise Linux 9, glibc 2.34 ([0005](0005-rackmarshal-infrastructure.md)) — which keeps
+  support matrix — Enterprise Linux 9, glibc 2.34 ([0005](0005-infrastructure.md)) — which keeps
   them loadable on EL10, Debian 12 and 13, and Ubuntu 24.04 and 26.04, all of which ship a newer glibc.
   Building on a newer glibc than the target host does not run there. A `CGO_ENABLED=0` build remains
   available for deployments that want no cgo and ships `aws-kms` and `kek-sealed` only, which then must
   be selected explicitly. Whether the starter's Taskfile builds with cgo today is unverified.
-- `v0.x` until accepted; API versions follow [0002](0002-rackmarshal-api-schema.md).
+- `v0.x` until accepted; API versions follow [0002](0002-api-schema.md).
 
 ### Testing
 
@@ -464,7 +464,7 @@ than one service.
   300-series workflow for the Basic and Config OP profiles.
 - **CA** — SoftHSM2 for the `pkcs11` backend on each native runner, and a fake KMS for `aws-kms`;
   issuance, renewal, and revocation with a fake
-  clock; chains verified through `rackmarshal-sdk` `pkg/tlsconfig`.
+  clock; chains verified through `sdk` `pkg/tlsconfig`.
 - **Enrollment** — concurrent redemption of one token succeeds exactly once; wrong environment, tenant,
   and expired tokens fail. Service account tokens from kind and synthetic issuers fail with a wrong
   issuer, audience, algorithm, or key, an age over `maxTokenAge`, an unmapped or other service's
@@ -483,11 +483,11 @@ than one service.
   impractical on AWS KMS.
 - **Opaque bearer API tokens** checked by introspection on every request — simpler, but the token
   services see would be unsigned, which 0001's environment binding rules out.
-- **Hosting login pages in `rackmarshal-identity`** — fewer hops, but puts an internet-facing surface on the
+- **Hosting login pages in `identity`** — fewer hops, but puts an internet-facing surface on the
   identity store, which 0001's auth split exists to avoid.
 - **PASETO tokens** — simpler format, but no OIDC or RFC 9068 interoperability.
 - **TOTP second factor** — widely supported and phishable; deferred behind WebAuthn.
-- **`TokenReview` against each cluster** — sees deleted pods, but gives `rackmarshal-identity` credentials and
+- **`TokenReview` against each cluster** — sees deleted pods, but gives `identity` credentials and
   a network path to every cluster API server, and enrollment fails when one is down.
 - **A write API for cluster issuers** — adds clusters without a deployment, but moves registration
   outside signed commits and Conftest.
@@ -495,7 +495,7 @@ than one service.
 ## Open questions
 
 - **Gateway exceptions** — `/authorize`, `/token`, `/device-authorization`, JWKS, and agent enrollment
-  must pass the gateway unauthenticated. Agree the allowlist with [0008](0008-rackmarshal-gateway.md).
+  must pass the gateway unauthenticated. Agree the allowlist with [0008](0008-gateway.md).
 - **Authorization decisions** — roles in the token with a role-to-permission table cached by the
   gateway (proposed), or a decision call per request?
 - **SAML IdP scope** — required in v1alpha1, or deferred until a relying party needs it, given
@@ -512,8 +512,8 @@ than one service.
 
 - [0001 — Project Repositories](0001-project-repositories.md) — auth split, agent enrollment,
   environment identity and awareness.
-- [0002](0002-rackmarshal-api-schema.md), [0003](0003-rackmarshal-sdk.md), [0004](0004-rackmarshal-common.md),
-  [0005](0005-rackmarshal-infrastructure.md), [0007](0007-rackmarshal-sso.md), [CONVENTIONS.md](CONVENTIONS.md).
+- [0002](0002-api-schema.md), [0003](0003-sdk.md), [0004](0004-common.md),
+  [0005](0005-infrastructure.md), [0007](0007-sso.md), [CONVENTIONS.md](CONVENTIONS.md).
 - [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636),
   [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009), [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517),
   [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414), [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628),

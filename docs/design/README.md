@@ -12,23 +12,23 @@ alternatives considered, and tracks its status as the decision matures.
 | #                                      | Title                  | Status | Date       |
 |----------------------------------------|------------------------|--------|------------|
 | [0001](0001-project-repositories.md)   | Project Repositories   | Draft  | 2026-07-11 |
-| [0002](0002-rackmarshal-api-schema.md)       | rackmarshal-api-schema       | Draft  | 2026-09-15 |
-| [0003](0003-rackmarshal-sdk.md)              | rackmarshal-sdk              | Draft  | 2026-09-15 |
-| [0004](0004-rackmarshal-common.md)           | rackmarshal-common           | Draft  | 2026-09-15 |
-| [0005](0005-rackmarshal-infrastructure.md)   | rackmarshal-infrastructure   | Draft  | 2026-09-15 |
-| [0006](0006-rackmarshal-identity.md)         | rackmarshal-identity         | Draft  | 2026-09-15 |
-| [0007](0007-rackmarshal-sso.md)              | rackmarshal-sso              | Draft  | 2026-09-15 |
-| [0008](0008-rackmarshal-gateway.md)          | rackmarshal-gateway          | Draft  | 2026-09-15 |
-| [0009](0009-rackmarshal-inventory.md)        | rackmarshal-inventory        | Draft  | 2026-09-15 |
-| [0010](0010-rackmarshal-cli.md)              | rackmarshal-cli              | Draft  | 2026-09-15 |
-| [0011](0011-rackmarshal-provisioner.md)      | rackmarshal-provisioner      | Draft  | 2026-09-15 |
-| [0012](0012-rackmarshal-agent.md)            | rackmarshal-agent            | Draft  | 2026-09-15 |
-| [0013](0013-rackmarshal-agent-plugin-sdk.md) | rackmarshal-agent-plugin-sdk | Draft  | 2026-09-15 |
-| [0014](0014-rackmarshal-agent-plugins.md)    | rackmarshal-agent-plugins    | Draft  | 2026-09-15 |
-| [0015](0015-rackmarshal-plugin-starter.md)   | rackmarshal-plugin-starter   | Draft  | 2026-09-15 |
+| [0002](0002-api-schema.md)             | api-schema             | Draft  | 2026-09-15 |
+| [0003](0003-sdk.md)                    | sdk                    | Draft  | 2026-09-15 |
+| [0004](0004-common.md)                 | common                 | Draft  | 2026-09-15 |
+| [0005](0005-infrastructure.md)         | infrastructure         | Draft  | 2026-09-15 |
+| [0006](0006-identity.md)               | identity               | Draft  | 2026-09-15 |
+| [0007](0007-sso.md)                    | sso                    | Draft  | 2026-09-15 |
+| [0008](0008-gateway.md)                | gateway                | Draft  | 2026-09-15 |
+| [0009](0009-inventory.md)              | inventory              | Draft  | 2026-09-15 |
+| [0010](0010-cli.md)                    | cli                    | Draft  | 2026-09-15 |
+| [0011](0011-provisioner.md)            | provisioner            | Draft  | 2026-09-15 |
+| [0012](0012-agent.md)                  | agent                  | Draft  | 2026-09-15 |
+| [0013](0013-agent-plugin-sdk.md)       | agent-plugin-sdk       | Draft  | 2026-09-15 |
+| [0014](0014-agent-plugins.md)          | agent-plugins          | Draft  | 2026-09-15 |
+| [0015](0015-plugin-starter.md)         | plugin-starter         | Draft  | 2026-09-15 |
 | [0016](0016-web-ui-architecture.md)    | Web UI architecture    | Draft  | 2026-09-16 |
-| [0017](0017-rackmarshal-portal.md)           | rackmarshal-portal           | Draft  | 2026-09-16 |
-| [0018](0018-rackmarshal-console.md)          | rackmarshal-console          | Draft  | 2026-09-16 |
+| [0017](0017-portal.md)                 | portal                 | Draft  | 2026-09-16 |
+| [0018](0018-console.md)                | console                | Draft  | 2026-09-16 |
 | [0019](0019-brand-identity.md)         | Brand identity         | Draft  | 2026-09-16 |
 | [0020](0020-desired-state-kinds.md)    | Desired-state kinds    | Draft  | 2026-09-18 |
 | [0021](0021-plugin-extensibility.md)   | Plugin extensibility   | Draft  | 2026-09-20 |

@@ -11,9 +11,9 @@
   the Go structures are first written from; once those structures exist they are the single source, and
   the OpenAPI 3.0 component schemas and the reference documentation are generated from them. There are
   no standalone JSON Schema files. This reverses the contract-first direction
-  [0002](0002-rackmarshal-api-schema.md) proposed, and amends it.
+  [0002](0002-api-schema.md) proposed, and amends it.
 
-> An initial draft. The kinds themselves were proposed in [0011](0011-rackmarshal-provisioner.md); this
+> An initial draft. The kinds themselves were proposed in [0011](0011-provisioner.md); this
 > document specifies them. Conventions other repositories depend on are summarized in
 > [CONVENTIONS.md](CONVENTIONS.md).
 
@@ -24,7 +24,7 @@ the resource kinds beneath them — with one line of description each and a sing
 schemas were given a home in 0002 at `schemas/<group>/<version>/<kind>.schema.json`. Between the two,
 nothing ever specified a field.
 
-That gap has already produced a defect. The portal's directive wizard ([0017](0017-rackmarshal-portal.md))
+That gap has already produced a defect. The portal's directive wizard ([0017](0017-portal.md))
 generates a `DirectiveSet`, and it was written by inferring the shape from 0011's one example. The YAML
 it produces is plausible rather than verified, because there was nothing to verify it against.
 
@@ -36,12 +36,12 @@ it produces is plausible rather than verified, because there was nothing to veri
 
 **Non-goals**
 
-- API operations, paths, and responses — [0002](0002-rackmarshal-api-schema.md).
-- How the provisioner renders, validates, and dispatches documents — [0011](0011-rackmarshal-provisioner.md).
+- API operations, paths, and responses — [0002](0002-api-schema.md).
+- How the provisioner renders, validates, and dispatches documents — [0011](0011-provisioner.md).
 - Plugin-defined resource kinds, whose schemas travel in the plugin's required provisioner bundle —
   [0021](0021-plugin-extensibility.md); the wire contract that carries them is
-  [0013](0013-rackmarshal-agent-plugin-sdk.md).
-- Inventory's endpoint and class schemas, which are a different tree — [0009](0009-rackmarshal-inventory.md).
+  [0013](0013-agent-plugin-sdk.md).
+- Inventory's endpoint and class schemas, which are a different tree — [0009](0009-inventory.md).
 
 ## Proposal
 
@@ -49,9 +49,9 @@ it produces is plausible rather than verified, because there was nothing to veri
 
 Two phases, and the distinction matters more than anything else in this document.
 
-**Bootstrap.** This catalogue is the specification. The Go types in `rackmarshal-api-schema` under
+**Bootstrap.** This catalogue is the specification. The Go types in `api-schema` under
 `pkg/desiredstate/v1alpha1` are written from it, by hand, once. That repository holds the shared types
-for service APIs, OPA, and these manifests ([0002](0002-rackmarshal-api-schema.md)).
+for service APIs, OPA, and these manifests ([0002](0002-api-schema.md)).
 
 **Steady state.** The Go types are the single source of truth. Everything else is generated:
 
@@ -70,9 +70,9 @@ the way the schemas and the wizard already drifted from each other. What stays h
 everything a struct tag cannot carry: the rationale, and the invariants in
 [Invariants](#invariants-a-type-cannot-carry).
 
-**What this costs.** 0002 originally chose contract-first so that `rackmarshal-sdk`, the gateway, and
+**What this costs.** 0002 originally chose contract-first so that `sdk`, the gateway, and
 the first services could start in parallel from a hand-written document. Under this direction the types
-must exist first instead — and they can, because they live in `rackmarshal-api-schema` rather than in
+must exist first instead — and they can, because they live in `api-schema` rather than in
 any service, and every consumer imports that one module. The parallelism survives; its starting point
 moves from a YAML document to a Go package.
 
@@ -234,7 +234,7 @@ struct tag expresses them, and they are what the generated schemas cannot check 
 - **Conflict.** Two `DirectiveSet`s targeting one endpoint with the same resource `kind` and
   `metadata.name` are a conflict, reported at plan time and never resolved by last writer wins (0011).
 - **Path separation.** Host resource kinds are refused on agentless endpoints, and device kinds on agent
-  endpoints; admission decides from the endpoint's path in `rackmarshal-inventory` (0011).
+  endpoints; admission decides from the endpoint's path in `inventory` (0011).
 - **Tenancy.** Every reference a document makes — `credentialRef`, `scriptRef`, `dependsOn` — resolves
   within the writing tenant only.
 - **Ordering.** `dependsOn` and `reloadOn` name resources in the same set; cycles and dangling names are
@@ -262,7 +262,7 @@ OpenAPI components, and the generated JSON Schema files are compared the same wa
 ## Alternatives considered
 
 - **Keeping contract-first, with the catalogue as prose** — the position 0002 took and this document
-  reverses. It keeps `rackmarshal-sdk` startable on day one, but leaves three artefacts describing one
+  reverses. It keeps `sdk` startable on day one, but leaves three artefacts describing one
   kind — hand-written schema, hand-written Go type, and prose — with nothing forcing agreement. That is
   how the wizard came to generate inferred YAML.
 - **A machine-readable block per kind in this document**, extracted by a generator. Considered because it
@@ -281,7 +281,7 @@ OpenAPI components, and the generated JSON Schema files are compared the same wa
 - **Bootstrap mechanics** — who writes the first Go structures from this catalogue, and is that reviewed
   against it field by field, or only against the examples?
 - **Reference documentation format** — godoc, a generated Markdown reference, or both? If Markdown, does
-  it live in `rackmarshal-api-schema` or here beside this document?
+  it live in `api-schema` or here beside this document?
 - **Field-table regeneration** — this document's tables are to be regenerated from the structures. Which
   tool does that, and does it rewrite the file in place or emit a fragment this document includes?
 - **`matchExpressions` operators** — `In`, `NotIn`, `Exists`, `DoesNotExist` mirrors Kubernetes. Is that
@@ -293,10 +293,10 @@ OpenAPI components, and the generated JSON Schema files are compared the same wa
 ## References
 
 - [0001](0001-project-repositories.md) — the desired-state format decision and Tengo sandbox bounds.
-- [0002](0002-rackmarshal-api-schema.md) — contract formats, generation, and the drift checks; amended by
+- [0002](0002-api-schema.md) — contract formats, generation, and the drift checks; amended by
   this document's generation direction.
-- [0011](0011-rackmarshal-provisioner.md) — the kinds, admission, rendering, conflicts, and device drivers.
-- [0012](0012-rackmarshal-agent.md) — host-phase policy, bundle generation bounds, and what the agent refuses.
-- [0017](0017-rackmarshal-portal.md) — the guided flow that produces a `DirectiveSet`.
+- [0011](0011-provisioner.md) — the kinds, admission, rendering, conflicts, and device drivers.
+- [0012](0012-agent.md) — host-phase policy, bundle generation bounds, and what the agent refuses.
+- [0017](0017-portal.md) — the guided flow that produces a `DirectiveSet`.
 - [OpenAPI Specification 3.0.3](https://spec.openapis.org/oas/v3.0.3.html) — the generated document
   version.

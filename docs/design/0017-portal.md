@@ -2,12 +2,12 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0017 — rackmarshal-portal
+# 0017 — portal
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-16
-- **Summary:** `rackmarshal-portal` is the tenant-facing web surface: the endpoints a tenant owns, the desired
+- **Summary:** `portal` is the tenant-facing web surface: the endpoints a tenant owns, the desired
   state applied to them, and whether reality matches. Every change goes through a plan the operator reads
   before applying, which is the thing a browser does better than a terminal. It is an OIDC relying party
   holding no API token in the browser, and adds no API of its own.
@@ -18,7 +18,7 @@
 
 ## Context & goals
 
-0001 gives tenants no interface at all. `rackmarshal-cli` ([0010](0010-rackmarshal-cli.md)) covers every operation,
+0001 gives tenants no interface at all. `cli` ([0010](0010-cli.md)) covers every operation,
 but it is an operator tool: it assumes a stored profile, a verified environment, and someone comfortable
 reading a YAML diff in a terminal. The people who own the endpoints Rackmarshal manages are frequently not that
 person, and the operations that matter most to them — seeing what drifted, reading what an apply would
@@ -37,16 +37,16 @@ change, and approving it — are exactly the ones that benefit from a rendered p
 **Non-goals**
 
 - Platform administration — tenants, environments, PKI, and cross-tenant agents are
-  [0018](0018-rackmarshal-console.md).
-- An API. The portal consumes the gateway through `rackmarshal-sdk` and exposes nothing of its own.
-- Replacing `rackmarshal-cli` for automation. Anything scriptable stays scriptable there.
+  [0018](0018-console.md).
+- An API. The portal consumes the gateway through `sdk` and exposes nothing of its own.
+- Replacing `cli` for automation. Anything scriptable stays scriptable there.
 
 ## Proposal
 
 ### Responsibilities
 
-- Render the tenant's endpoints, their facts, labels, history, and drift state from `rackmarshal-inventory`.
-- Render desired state from `rackmarshal-provisioner`: directive sets, policies, scripts, device connections.
+- Render the tenant's endpoints, their facts, labels, history, and drift state from `inventory`.
+- Render desired state from `provisioner`: directive sets, policies, scripts, device connections.
 - Accept a document by file or paste, validate it against its JSON Schema before it leaves the browser,
   and author a new `DirectiveSet` through a guided flow.
 - Run and display plans, and apply them after explicit confirmation.
@@ -75,7 +75,7 @@ change, and approving it — are exactly the ones that benefit from a rendered p
 | `/access/members`           | Tenant members and role assignment                              | admin      |
 | `/settings`                 | Theme, density, timezone, notification preferences              | member     |
 
-Roles are the tenant roles `rackmarshal-identity` already issues; the portal reads them from the session
+Roles are the tenant roles `identity` already issues; the portal reads them from the session
 principal and renders no navigation entry a role cannot use, rather than rendering a control that fails
 on submit.
 
@@ -119,7 +119,7 @@ open question rather than adopting them before there is evidence they are needed
 
 ### Dependencies
 
-As 0016 fixes: templ, Echo, htmx, Alpine's CSP build, `rackmarshal-sdk`, `rackmarshal-common`, and the vendored
+As 0016 fixes: templ, Echo, htmx, Alpine's CSP build, `sdk`, `common`, and the vendored
 `tokens.css` from [0019](0019-brand-identity.md). The portal adds no dependency of its own. Charts on the
 overview are drawn as inline SVG from the same data the tables use rather than through a charting
 library, which keeps the CSP free of another script origin and the module graph unchanged.
@@ -139,7 +139,7 @@ written to disk.
   tenant's object exists. This mirrors the rule CONVENTIONS sets for the API.
 - **Role enforcement server-side** — hidden navigation is a convenience, not a control. Every handler
   re-checks the role before calling the gateway.
-- **Upload handling** — a directive document is validated against its JSON Schema from `rackmarshal-api-schema`
+- **Upload handling** — a directive document is validated against its JSON Schema from `api-schema`
   before it reaches the gateway, and the same 1 MiB limit, alias-node rejection, and unknown-field
   rejection 0011 applies at admission are applied here so a malformed file fails with a readable message
   instead of a `422` from a service the user never sees.
@@ -158,7 +158,7 @@ disable the density and debug affordances in `/settings`.
 
 ### Logging & telemetry
 
-Through `rackmarshal-common`, per CONVENTIONS, with the fields 0016 defines. Every plan and apply emits a span
+Through `common`, per CONVENTIONS, with the fields 0016 defines. Every plan and apply emits a span
 carrying `rackmarshal.tenant.id`, the document generations involved, and the resulting reconciliation ID, so a
 support question about "what did we change at 14:20" resolves from the trace rather than from memory.
 Fact values, uploaded document bodies, and token values are never logged.
@@ -189,7 +189,7 @@ image, Helm chart, deb/rpm, NSIS installer. No cgo, so it cross-compiles normall
 
 ## Alternatives considered
 
-- **Folding the portal into `rackmarshal-console` with RBAC** — cheaper, and rejected in 0016 for blast radius.
+- **Folding the portal into `console` with RBAC** — cheaper, and rejected in 0016 for blast radius.
   Worth restating here: the console issues enrollment tokens and approves service enrollments, and those
   controls should not share a process with the tenant-facing application.
 - **Leaving authoring out entirely** — the position this document originally took: directive sets belong
@@ -212,21 +212,21 @@ image, Helm chart, deb/rpm, NSIS installer. No cgo, so it cross-compiles normall
 ## Open questions
 
 - **Bulk operations** — should the endpoint list support multi-select label edits and bulk retire, or
-  does that belong in `rackmarshal-cli` where a mistake is easier to script around?
+  does that belong in `cli` where a mistake is easier to script around?
 - **Saved views** — per-user filters on the endpoint list would need per-user storage the portal does not
   otherwise have. Session, database, or `localStorage`?
 - **Notification preferences** — `/settings` lists them, but no component sends notifications yet. Which
   service owns delivery?
 - **Fact search scale** — an endpoint can report thousands of facts. Is client-side filtering adequate,
-  or does `rackmarshal-inventory` need a fact query parameter?
+  or does `inventory` need a fact query parameter?
 - **Tenant administrator enrollment tokens** — 0006 marks enrollment token creation `operator` audience.
   Does a tenant administrator hold that, or does the console own all issuance?
 
 ## References
 
-- [0009](0009-rackmarshal-inventory.md) — endpoints, facts, labels, and history the portal renders.
-- [0011](0011-rackmarshal-provisioner.md) — directive sets, the plan endpoint, policy decisions, and
+- [0009](0009-inventory.md) — endpoints, facts, labels, and history the portal renders.
+- [0011](0011-provisioner.md) — directive sets, the plan endpoint, policy decisions, and
   `endpoint_status` drift values.
-- [0010](0010-rackmarshal-cli.md) — the confirmation convention and output vocabulary this surface matches.
+- [0010](0010-cli.md) — the confirmation convention and output vocabulary this surface matches.
 - [0016](0016-web-ui-architecture.md) — stack, session, CSP, and configuration.
 - [0019](0019-brand-identity.md) — tokens, drift pills, and the tier stripe.

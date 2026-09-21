@@ -2,16 +2,16 @@
   ~ SPDX-License-Identifier: Apache-2.0
 -->
 
-# 0009 — rackmarshal-inventory
+# 0009 — inventory
 
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
-- **Summary:** `rackmarshal-inventory` is the tenant-scoped source of truth for every managed endpoint. Each
+- **Summary:** `inventory` is the tenant-scoped source of truth for every managed endpoint. Each
   endpoint has a class that fixes its enforcement path and attribute schema, operator-declared labels and
   attributes, agent- or provisioner-reported facts, and a revision history. Data lives in PostgreSQL behind
   row-level security, migrated with goose. The service accepts agent reports through the gateway's agent
-  ingress and feeds `rackmarshal-provisioner` a change stream.
+  ingress and feeds `provisioner` a change stream.
 
 > An initial draft with concrete proposals, bounded by the
 > [Resolved decisions](0001-project-repositories.md#resolved-decisions) in 0001. Conventions other
@@ -19,8 +19,8 @@
 
 ## Context & goals
 
-0001 makes `rackmarshal-inventory` the "source-of-truth catalog and schemas of the managed servers, network
-devices, and remote endpoints" and the upstream for `rackmarshal-agent`'s reported inventory
+0001 makes `inventory` the "source-of-truth catalog and schemas of the managed servers, network
+devices, and remote endpoints" and the upstream for `agent`'s reported inventory
 ([Repository inventory](0001-project-repositories.md#repository-inventory)). Both enforcement paths, agent
 and agentless, converge against it, and the endpoint class decides which path covers an endpoint
 ([Desired-state model](0001-project-repositories.md#desired-state-model--one-authority-two-enforcement-paths)).
@@ -32,14 +32,14 @@ that proves the full request loop ([Sequencing](0001-project-repositories.md#seq
 - A resource model that separates what operators declare from what endpoints report.
 - Hard tenant isolation, enforced in the database as well as in code.
 - Cheap, idempotent ingestion of frequent agent reports.
-- A queryable history and a change stream that `rackmarshal-provisioner` can reconcile from.
+- A queryable history and a change stream that `provisioner` can reconcile from.
 
 **Non-goals**
 
-- Desired state, directives, and compliance results — [0011](0011-rackmarshal-provisioner.md).
-- Agent identity, certificates, and tenants as accounts — [0006](0006-rackmarshal-identity.md).
+- Desired state, directives, and compliance results — [0011](0011-provisioner.md).
+- Agent identity, certificates, and tenants as accounts — [0006](0006-identity.md).
 - Device credentials for agentless management — not stored here (see Open questions).
-- Fact collection on hosts — [0012](0012-rackmarshal-agent.md) and its plugins.
+- Fact collection on hosts — [0012](0012-agent.md) and its plugins.
 
 ## Proposal
 
@@ -47,9 +47,9 @@ that proves the full request loop ([Sequencing](0001-project-repositories.md#seq
 
 - **Catalog** — endpoints, endpoint classes, and relationships per tenant.
 - **Schemas** — class-defined JSON Schemas for declared attributes and optional fact schemas.
-- **Ingestion** — agent reports (agent audience) and agentless facts from `rackmarshal-provisioner` (internal).
+- **Ingestion** — agent reports (agent audience) and agentless facts from `provisioner` (internal).
 - **History** — revisions of declared data and of facts, with retention.
-- **Change stream** — ordered endpoint events for `rackmarshal-provisioner`.
+- **Change stream** — ordered endpoint events for `provisioner`.
 
 ### Interfaces
 
@@ -102,7 +102,7 @@ sub-resource so lists stay small.
 #### API sketch
 
 All paths are `/inventory/v1alpha1/...`. The tenant comes from the verified principal, as proposed in 0002
-and [0008](0008-rackmarshal-gateway.md), never from the path.
+and [0008](0008-gateway.md), never from the path.
 
 | Method and path                                  | Audience             | Notes                                     |
 |--------------------------------------------------|----------------------|-------------------------------------------|
@@ -113,7 +113,7 @@ and [0008](0008-rackmarshal-gateway.md), never from the path.
 | `DELETE /endpoints/{endpointId}`                 | operator             | sets `retired`; purged after retention    |
 | `GET /retention` / `PUT /retention`              | operator             | the calling tenant's retention policy     |
 | `GET /endpoints/{endpointId}/facts`              | operator, internal   | current facts                             |
-| `PUT /endpoints/{endpointId}/facts`              | internal             | agentless facts from `rackmarshal-provisioner`  |
+| `PUT /endpoints/{endpointId}/facts`              | internal             | agentless facts from `provisioner`  |
 | `GET /endpoints/{endpointId}/revisions`          | operator             | `kind=declared` or `kind=facts`           |
 | `GET`, `POST /endpoint-classes`                  | operator             | built-ins are listed but read-only        |
 | `GET`, `PUT`, `DELETE /endpoint-classes/{name}`  | operator             | `PUT` for tenant classes only             |
@@ -152,8 +152,8 @@ the code `resource_version_conflict`.
 #### Agent report ingestion
 
 ```
-rackmarshal-agent ──mTLS 1.3──► rackmarshal-gateway (agent ingress)
-            ──mTLS + X-Rackmarshal-Principal {agent, tenantId}──► rackmarshal-inventory
+agent ──mTLS 1.3──► gateway (agent ingress)
+            ──mTLS + X-Rackmarshal-Principal {agent, tenantId}──► inventory
                                                              POST /inventory/v1alpha1/agent-reports
 ```
 
@@ -163,11 +163,11 @@ rackmarshal-agent ──mTLS 1.3──► rackmarshal-gateway (agent ingress)
 2. **Binding** — inventory finds the endpoint bound to the agent ID. On first contact it auto-registers
    one: the class comes from the reported OS family through `autoRegistration.classByOsFamily`, the name
    from the reported hostname (a numeric suffix resolves collisions), and the labels from the enrollment
-   token's host labels, read from `rackmarshal-identity` through an `internal` operation that 0006 defines.
+   token's host labels, read from `identity` through an `internal` operation that 0006 defines.
 3. **Unchanged facts** — if `previousDigest` equals the digest the server issued last time, `facts` may
    be omitted. The report then only updates `factsReportedAt`. The digest is an opaque server value, so
    agents need no canonical JSON.
-4. **Validation** — core facts are checked against the `AgentReport` schema from `rackmarshal-api-schema`, and
+4. **Validation** — core facts are checked against the `AgentReport` schema from `api-schema`, and
    `facts.plugins.<name>` against the class's `factSchema` where one is defined. Limits: 8 MiB
    decompressed per report, 256 KiB per plugin, nesting depth 32.
 5. **Write** — one transaction: lock the endpoint row, ignore a `sequence` that is not newer (a replayed
@@ -176,9 +176,9 @@ rackmarshal-agent ──mTLS 1.3──► rackmarshal-gateway (agent ingress)
 6. **Receipt** — `202 { endpointId, factsDigest, nextReportAfter }`. The server sets the report cadence
    (default 5 minutes, with jitter), which spreads load across the fleet.
 
-#### Relationship to `rackmarshal-provisioner`
+#### Relationship to `provisioner`
 
-- **Reads** — `rackmarshal-provisioner` selects endpoints with `labelSelector` through `internal` list and get
+- **Reads** — `provisioner` selects endpoints with `labelSelector` through `internal` list and get
   operations, called service to service over mutual TLS, never through the gateway.
 - **Watches** — it long-polls `GET /endpoint-events` with a durable cursor. Events are
   `endpoint.created`, `endpoint.declared-updated`, `endpoint.facts-updated`, `endpoint.retired`, and
@@ -187,13 +187,13 @@ rackmarshal-agent ──mTLS 1.3──► rackmarshal-gateway (agent ingress)
 - **Writes** — for agentless devices only, it `PUT`s facts it discovered through device APIs, with its
   own principal as the revision actor.
 - **Authority** — inventory stores no desired state and makes no reconciliation decisions.
-  `rackmarshal-provisioner` compares its directives with declared attributes and facts. Internal callers name
+  `provisioner` compares its directives with declared attributes and facts. Internal callers name
   the tenant with `X-Rackmarshal-Tenant-Id`, which is honored only from SPIFFE IDs in `internalCallers`.
 
 ### Dependencies
 
-- **Rackmarshal** — `rackmarshal-api-schema` (models, embedded document, `AgentReport` schema), `rackmarshal-sdk` (`spiffe`,
-  `tlsconfig`, `revocation`, `enroll`, `principal`, and the identity client), `rackmarshal-common`.
+- **Rackmarshal** — `api-schema` (models, embedded document, `AgentReport` schema), `sdk` (`spiffe`,
+  `tlsconfig`, `revocation`, `enroll`, `principal`, and the identity client), `common`.
 - **Kept from the starter** — Echo v5.3.1; `jackc/pgx/v5` v5.11.0; `pressly/goose/v3` v3.28.0, which adds
   `mfridman/interpolate`, `sethvargo/go-retry`, `go.uber.org/multierr`, and `golang.org/x/sync`.
 - **New** — `santhosh-tekuri/jsonschema/v6` v6.0.3, already pinned in CONVENTIONS, for class schemas.
@@ -202,7 +202,7 @@ rackmarshal-agent ──mTLS 1.3──► rackmarshal-gateway (agent ingress)
   `jinzhu/inflection`, `puzpuzpuz/xsync/v3`, `tmthrgd/go-hex`, `vmihailenco/msgpack/v5`,
   `vmihailenco/tagparser/v2`), and the queries here (JSONB containment, `FOR UPDATE`, `SET LOCAL`) are
   plain SQL anyway. Goose keeps running through `pgx/v5/stdlib`.
-- **Measured footprint** — with bun, the proposed set plus `rackmarshal-common`'s OpenTelemetry stack links 40
+- **Measured footprint** — with bun, the proposed set plus `common`'s OpenTelemetry stack links 40
   third-party modules (123 in `go list -m all`). Without bun, subtracting its 7 gives about 33, not
   separately measured.
 
@@ -325,8 +325,8 @@ distributes across replicas by whichever one the gateway routes to.
   owner too. The runtime role owns no tables and lacks `BYPASSRLS`; goose runs as a separate migration
   role.
 - **Principal trust.** `X-Rackmarshal-Principal` is accepted only from
-  `spiffe://<environment-id>/service/rackmarshal-gateway`, and `X-Rackmarshal-Tenant-Id` only from `internalCallers`
-  (default `rackmarshal-provisioner`). Agents can act only on their own endpoint.
+  `spiffe://<environment-id>/service/gateway`, and `X-Rackmarshal-Tenant-Id` only from `internalCallers`
+  (default `provisioner`). Agents can act only on their own endpoint.
 - **Schema safety.** Tenant-supplied JSON Schemas compile with remote `$ref` loading disabled, and are
   capped at 64 KiB and depth 32. Whether jsonschema v6's default loader fetches over the network is
   unverified; the service installs an explicit loader with no network access regardless.
@@ -334,7 +334,7 @@ distributes across replicas by whichever one the gateway routes to.
   and only their size and digest appear in traces.
 - **Database transport.** `sslmode=verify-full` against the environment CA bundle. A plaintext database
   connection is the last-resort feature `plaintext-database`.
-- **Service identity.** Mutual TLS 1.3 on the service listener, with `rackmarshal-sdk` `tlsconfig.Server` and
+- **Service identity.** Mutual TLS 1.3 on the service listener, with `sdk` `tlsconfig.Server` and
   revocation checks.
 
 ### Environment awareness
@@ -344,7 +344,7 @@ distributes across replicas by whichever one the gateway routes to.
   `sslmode=verify-full`. `AllowLastResort("plaintext-database")` refuses in `production` unless
   overridden.
 - **Migrations** — `database.autoMigrate` defaults to true only in `development` and `test`. Hardened tiers
-  run `rackmarshal-inventory migrate` as a separate, logged deployment step ([0005](0005-rackmarshal-infrastructure.md)).
+  run `rackmarshal-inventory migrate` as a separate, logged deployment step ([0005](0005-infrastructure.md)).
 
 ### Logging & telemetry
 
@@ -372,7 +372,7 @@ Prefix `RACKMARSHAL_INVENTORY_`. Starter server, logging, environment, and telem
 | `retention.sweepInterval`           | `RACKMARSHAL_INVENTORY_RETENTION_SWEEP_INTERVAL`       | `1h`                  |
 | `history.declaredRetention`         | `RACKMARSHAL_INVENTORY_HISTORY_DECLARED_RETENTION`     | `9600h`               |
 | `events.retention`                  | `RACKMARSHAL_INVENTORY_EVENTS_RETENTION`               | `168h`                |
-| `internalCallers`                   | `RACKMARSHAL_INVENTORY_INTERNAL_CALLERS`               | `rackmarshal-provisioner`   |
+| `internalCallers`                   | `RACKMARSHAL_INVENTORY_INTERNAL_CALLERS`               | `provisioner`   |
 
 The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces the starter's inline
 `database.dsn`.
@@ -413,24 +413,24 @@ The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces 
   lets agents skip uploads without a server round trip, but every agent and plugin must canonicalize
   identically.
 - **Storing reconciliation status** on endpoints — a single view for operators, but it blurs the single
-  desired-state authority that 0001 assigns to `rackmarshal-provisioner`.
+  desired-state authority that 0001 assigns to `provisioner`.
 
 ## Open questions
 
 - **Pre-registration** — should operators be able to claim an agent onto a declared endpoint, e.g. an
-  enrollment token that names an `endpointId` ([0006](0006-rackmarshal-identity.md))?
+  enrollment token that names an `endpointId` ([0006](0006-identity.md))?
 - **Retirement** — should retiring an agent-managed endpoint revoke the agent's certificate automatically?
-- **Agentless credentials** — where do device API credentials live: `rackmarshal-provisioner`, an external
-  secret manager, or `rackmarshal-identity`?
-- **Compliance view** — where do operators see reconciliation status ([0011](0011-rackmarshal-provisioner.md))?
+- **Agentless credentials** — where do device API credentials live: `provisioner`, an external
+  secret manager, or `identity`?
+- **Compliance view** — where do operators see reconciliation status ([0011](0011-provisioner.md))?
 - **Cross-tenant operators** — can an environment administrator query across tenants, and how does that
   interact with row-level security?
-- **PostgreSQL floor** — 16 is proposed; which versions will [0005](0005-rackmarshal-infrastructure.md) operate?
-- **Fact scrubbing** — who strips secrets that plugins might report, the agent ([0012](0012-rackmarshal-agent.md))
+- **PostgreSQL floor** — 16 is proposed; which versions will [0005](0005-infrastructure.md) operate?
+- **Fact scrubbing** — who strips secrets that plugins might report, the agent ([0012](0012-agent.md))
   or inventory?
 - **Retention defaults** — are 90 days of facts history and 400 days of declared history right?
 - **Where tenant policy lives** — `tenant_retention` is proposed here because retention governs this
-  service's own storage and has to be read inside the sweep's transaction. `rackmarshal-identity` is the
+  service's own storage and has to be read inside the sweep's transaction. `identity` is the
   tenant registry and already holds per-tenant policy in `tenants.agent_cert_lifetime` (0006), so the
   alternative is a column there and a cached `internal` lookup. That keeps one tenant record but puts a
   cross-service call, and a failure mode, inside a background job.
@@ -439,8 +439,8 @@ The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces 
 
 - [0001 — Project Repositories](0001-project-repositories.md) — inventory role, desired-state model,
   agent enrollment, environment identity.
-- [0002 — rackmarshal-api-schema](0002-rackmarshal-api-schema.md), [0003 — rackmarshal-sdk](0003-rackmarshal-sdk.md),
-  [0004 — rackmarshal-common](0004-rackmarshal-common.md), [0008 — rackmarshal-gateway](0008-rackmarshal-gateway.md),
+- [0002 — api-schema](0002-api-schema.md), [0003 — sdk](0003-sdk.md),
+  [0004 — common](0004-common.md), [0008 — gateway](0008-gateway.md),
   [CONVENTIONS.md](CONVENTIONS.md).
 - [go-echo-starter](https://github.com/servercurio/go-echo-starter) — `internal/database` (pgx stdlib, bun,
   goose embedded migrations) and `go.mod`.
