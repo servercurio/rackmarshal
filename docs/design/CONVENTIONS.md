@@ -233,7 +233,7 @@ Rackmarshal deploys to Kubernetes, Docker/Podman hosts, and supported operating 
   and `managed-by`. The product name belongs in `part-of`, not folded into every object's name.
 - **Linux packages** — signed deb and rpm packages with a hardened systemd unit, for Enterprise Linux and
   Debian/Ubuntu LTS on amd64 and arm64.
-- **Windows package** — a signed [NSIS](https://nsis.sourcerackmarshal.io) installer (`.exe`,
+- **Windows package** — a signed [NSIS](https://nsis.sourceforge.io) installer (`.exe`,
   Authenticode-signed) that installs the service as a Windows service on Windows Server. NSIS is
   zlib/libpng licensed and builds on Linux runners.
 

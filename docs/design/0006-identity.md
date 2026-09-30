@@ -133,13 +133,13 @@ revocation cache window rather than at certificate expiry.
 
 - **Access tokens** — JWT per [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), ES256, 10 minutes.
   `iss` is the issuer URL above; `aud` is `spiffe://<environment-id>/service/gateway`. Claims:
-  `sub` (principal ID), `client_id`, `scope`, `jti`, `amr`, `forge_tenant`, `forge_roles`. The gateway
-  verifies locally against JWKS and rejects any `iss` or `aud` naming another environment.
+  `sub` (principal ID), `client_id`, `scope`, `jti`, `amr`, `rackmarshal_tenant`, `rackmarshal_roles`.
+  The gateway verifies locally against JWKS and rejects any `iss` or `aud` naming another environment.
 - **ID tokens** — for third-party OIDC relying parties only; never accepted as bearer tokens.
 - **Refresh tokens** — opaque, 256 random bits, stored as SHA-256, rotated on every use with reuse
   detection that revokes the family. Idle 8 hours, absolute 7 days (proposed).
-- **API tokens** — `forge_pat_<environment-id>_<secret>`, stored as SHA-256 (256-bit secrets need no
-  slow hash). The gateway exchanges one for a signed access token through `token-introspections`
+- **API tokens** — `rackmarshal_pat_<environment-id>_<secret>`, stored as SHA-256 (256-bit secrets need
+  no slow hash). The gateway exchanges one for a signed access token through `token-introspections`
   (RFC 8693 semantics) and caches the result for at most its 5-minute lifetime, so every bearer token a
   service sees is a signed, environment-bound JWT. Maximum lifetime 365 days, default 90.
 - **SAML assertions** — signed with a per-environment key; the audience restriction and issuer carry
@@ -149,7 +149,7 @@ revocation cache window rather than at certificate expiry.
 #### Enrollment tokens
 
 Format (answers 0003's open question), parseable offline:
-`fe1.<environment-id>.<ca-sha256>.<token-id>.<secret>`, where `<ca-sha256>` is the root certificate's
+`rm1.<environment-id>.<ca-sha256>.<token-id>.<secret>`, where `<ca-sha256>` is the root certificate's
 SHA-256 in unpadded lowercase base32 (52 characters) and `<secret>` is 256 bits. Only the secret's
 SHA-256 is stored.
 

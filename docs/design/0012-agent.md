@@ -90,7 +90,7 @@ the host is re-enrolled.
 - **Pull** — `serve` long-polls `GET /provisioner/v1alpha1/directive-bundles/current` with
   `If-None-Match` and `waitSeconds=55`, with jittered backoff on errors (0011). It also fetches the
   environment CRL (path per 0006) so the offline executor can check the signer. The CRL is signed by the
-  environment CA, so the gateway cannot rackmarshal one; it could withhold a fresh one, which is why a CRL
+  environment CA, so the gateway cannot forge one; it could withhold a fresh one, which is why a CRL
   older than its `nextUpdate` stops new bundles from being accepted, and why `revocation.crlUrl` may name
   a source that does not pass through the gateway.
 - **Verify** (executor, fail closed): the DSSE signature; a signer chain to the environment roots

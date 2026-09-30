@@ -136,7 +136,7 @@ signature for plugin pins.
 Two environment-wide fields ride along for core plugins ([0012](0012-agent.md)): `coreKeyId`,
 naming the embedded core public key agents treat as current, and `coreRevocations`, a list of core key
 IDs and plugin digests. `coreRevocations` is signed by the other embedded core key and copied into the
-payload verbatim, so a compromised provisioner can neither rackmarshal a revocation nor drop one an agent has
+payload verbatim, so a compromised provisioner can neither forge a revocation nor drop one an agent has
 already recorded. `coreKeyId` carries only the provisioner's signature, but an agent accepts it solely
 when it names a key the agent already embeds and never moves it backwards, so the worst a compromised
 provisioner achieves is retiring the current key early — a denial of service that fails closed, not a
@@ -470,7 +470,7 @@ support the current and previous `apiVersion`.
   from 0001's "OPA as a Go library" decision.
 - **Push to agents** (provisioner connects out or holds streams) — needs a route to hosts and long-lived
   connections through the gateway; pull with long polling fits the agent ingress.
-- **Unsigned bundles relying on mutual TLS** — a compromised gateway could rackmarshal directives that OPA
+- **Unsigned bundles relying on mutual TLS** — a compromised gateway could forge directives that OPA
   might still allow.
 - **On-host verification only** — without an import check, an unverifiable release could be pinned and
   would fail on every host instead of at admission; see
