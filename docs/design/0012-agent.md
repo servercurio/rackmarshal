@@ -66,14 +66,14 @@ and inventory to `spool/outbox`. Other commands: `enroll`, `status`, `version`, 
 
 #### Enrollment
 
-`agent enroll --token-file <path>` (or the token on stdin, never as an argument, so it cannot leak
-through the process list), built on `sdk` `pkg/enroll` ([0003](0003-sdk.md)):
+`rackmarshal-agent enroll --token-file <path>` (or the token on stdin, never as an argument, so it
+cannot leak through the process list), built on `sdk` `pkg/enroll` ([0003](0003-sdk.md)):
 
 1. `enroll.ParseToken` reads the environment ID and CA certificate hash offline.
 2. **Key** — `keystore.auto` picks, in order: TPM 2.0 on Linux (`/dev/tpmrm0` via `go-tpm`, an ECC P-256
    signing key under the storage root key, stored as TPM-wrapped blobs), the Windows Platform Crypto
-   Provider (`certtostore`), then `enroll.FileKeyStore` (`0600`, owned by `agent`). The chosen
-   backend is reported in inventory as `keyProtection` so policies can require hardware keys.
+   Provider (`certtostore`), then `enroll.FileKeyStore` (`0600`, owned by `rackmarshal-agent`). The
+   chosen backend is reported in inventory as `keyProtection` so policies can require hardware keys.
 3. `enroll.Enroll` checks that the gateway's chain matches the token's CA hash and that its SPIFFE ID is
    `spiffe://<environment-id>/service/gateway`. Only then does it send the CSR.
 4. The certificate carries `spiffe://<environment-id>/agent/<agent-id>`. `Result` is written atomically
@@ -103,8 +103,8 @@ the host is re-enrolled.
   bundle's `coreKeyId` and revocation list are recorded with the same monotonicity: a bundle may move the
   current core key forward or add revocations, never move back or drop them, so a replayed older bundle
   cannot restore a retired or revoked key.
-- **Validate** each resource against its JSON Schema — embedded from `api-schema` for built-in
-  kinds, and from the plugin's provisioner bundle for a plugin kind
+- **Validate** each resource against its JSON Schema — embedded from `api-schema` for the kinds it
+  defines, and from the plugin's provisioner bundle for a plugin kind
   ([0021](0021-plugin-extensibility.md)). The provisioner validated the same specs before signing; the
   agent validates them again on accept, because neither end relies on the other having checked. A
   failure rejects the bundle and keeps the previous generation.
@@ -118,11 +118,12 @@ the host is re-enrolled.
 
 #### Enforcement model
 
-- **Handlers** — built-in kinds `File`, `Directory`, `Service` (systemd, Windows SCM, launchd), and
-  `Package` (the OS package manager). Everything else is provided by plugins. Each handler implements
-  `Observe`, `Diff`, `Apply`, and `Verify`.
-- **Idempotence** — `Apply` runs only when `Diff` is non-empty; `Verify` re-observes and must be empty.
-  Files are written to a temp file, `fsync`ed, and renamed.
+- **Handlers** — none are built in: the agent core is kind-agnostic and dispatches each resource to the
+  plugin granted its `resource:` capability. `File`, `Directory`, `Package`, and `Service` come from the
+  first-party `files`, `packages`, and `services` plugins ([0014](0014-agent-plugins.md)); each plugin
+  validates, plans, and applies through `ResourceService` (0013).
+- **Idempotence** — `ApplyResource` runs only when `PlanResource` reports a change; a plan after the
+  apply must be empty. The `files` plugin writes to a temp file, syncs it, and renames it (0014).
 - **Ordering** — resources run in `dependsOn` order; a failure skips its dependents and continues the
   others.
 - **Cadence** — on every new bundle, and every `enforce.interval` (default 30 minutes) to correct drift.
@@ -150,12 +151,14 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
   [L735](https://github.com/hashicorp/go-plugin/blob/v1.8.0/client.go#L735)), so a writable store would
   leave a swap window between the two. Nothing but root can write this store, and every launch
   re-reads the sidecar digest and re-checks it against the accepted bundle pin before the hash.
-- **Core plugins** — `sigstore` (`rackmarshal-plugin-sigstore`, the Sigstore validator) and `sysfacts` are
-  built in [0014](0014-agent-plugins.md) and ship in every agent package under
-  `/usr/lib/rackmarshal-agent/plugins/<name>/`, each beside its `<asset>.core.dsse.json` envelope, root-owned
-  and read-only. They are enabled by default. Root-owned local config may disable them
-  (`plugins.core.disabled`), but cannot replace them: a binary runs as a core plugin only if its core
-  statement verifies. With `sigstore` disabled, no non-core plugin can be installed (fail closed).
+- **Core plugins** — `sigstore` (`rackmarshal-plugin-sigstore`, the Sigstore validator), `sysfacts`, and
+  the `packages`, `files`, and `services` resource plugins are built in [0014](0014-agent-plugins.md) and
+  ship in every agent package under `/usr/lib/rackmarshal-agent/plugins/<name>/`, each beside its
+  `<asset>.core.dsse.json` envelope, root-owned and read-only. They are enabled by default. Root-owned
+  local config may disable them (`plugins.core.disabled`), but cannot replace them: a binary runs as a
+  core plugin only if its core statement verifies. With `sigstore` disabled, no non-core plugin can be
+  installed (fail closed); with a resource plugin disabled, resources of its kinds fail rather than being
+  skipped.
 - **Core trust** — the agent embeds the Rackmarshal core-plugin public keys with `//go:embed`
   ([`embed`](https://pkg.go.dev/embed)): ECDSA P-256, as a list holding the current and next key for
   rotation. The private key stays in an HSM or cloud KMS and is used only by the `agent-plugins`
@@ -224,8 +227,10 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
   feature, so the rules are identical on Linux, Windows, and macOS. For each plugin process with a
   network grant (`packages`, and the validator's `refresh` mode), the agent starts a proxy bound to
   loopback on an ephemeral port, authorized by a per-process token, that accepts only the `{host,
-  port}` pairs in that grant and refuses every other destination, redirect, and CONNECT target. It
-  passes the proxy to the plugin two ways:
+  port}` pairs in that grant and refuses every other destination, redirect, and CONNECT target. The
+  grant is the manifest's request narrowed by root-owned `plugins.grants` (0013), so a manifest asking
+  for `{host: "*"}` reaches nothing until an operator names the hosts. The agent passes the proxy to the
+  plugin two ways:
   - the SDK's client uses it through `Init` (0013), and
   - `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` are set in the plugin's environment, so tools the
     plugin execs follow it too: apt supports `http_proxy` for system-wide configuration
@@ -238,16 +243,14 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
   sandbox: a hostile plugin can open its own socket and bypass the proxy. The trust basis stays the
   signed plugin and the capability grant the operator approved; the proxy stops an honest plugin from
   reaching an ungranted destination and makes every attempt visible.
-- **OS controls, shipped and optional** — the agent can also express each grant as native OS policy, so
-  a bypass attempt fails in the kernel rather than only in the log. `osControls.mode` selects `off`
-  (default), `check`, or `apply`; nothing touches host firewall state unless an operator sets `apply`.
-  The definitions are derived from the accepted bundle, so they follow grant changes without
-  hand-maintained templates:
-  - **Executor lockdown** — `IPAddressDeny=any` with `IPAddressAllow=localhost` in a drop-in under
-    `<unit>.d/`, which systemd merges after the unit file
-    ([systemd.unit](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)); a block
-    rule on the executor binary on Windows; the pf equivalent on macOS. Only the loopback proxy stays
-    reachable.
+- **OS controls: executor lockdown always, per-plugin rules optional** — the executor lockdown always
+  ships with the package: `IPAddressDeny=any` with `IPAddressAllow=localhost` in the executor's systemd
+  unit (see Security), a block rule on the executor binary on Windows, and the pf equivalent on macOS,
+  so only the loopback proxy stays reachable. The agent can also express each plugin's grant as native
+  OS policy, so a bypass attempt fails in the kernel rather than only in the log. These per-plugin rules
+  are optional: `osControls.mode` selects `off` (default), `check`, or `apply`, and nothing touches host
+  firewall state for them unless an operator sets `apply`. The definitions are derived from the
+  accepted bundle, so they follow grant changes without hand-maintained templates:
   - **Per-plugin grant rules** — one rule set per plugin holding a network grant, including the
     validator's TUF egress: transient-unit properties on Linux
     ([systemd.resource-control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)),
@@ -258,8 +261,8 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
   - **Regeneration** — on every accepted bundle whose grants differ, `apply` mode rewrites and reloads
     the definitions before the affected plugin launches, and refuses to launch it if that fails, so a
     grant is never left enforced only in the proxy when the operator asked for OS policy.
-  - **Verification** — `rackmarshal-agent os-controls check` (also what `check` mode runs) compares live OS
-    state with the generated definitions and reports drift without changing anything, for CI and the
+  - **Verification** — `rackmarshal-agent os-controls check` (also what `check` mode runs) compares live
+    OS state with the generated definitions and reports drift without changing anything, for CI and the
     control node (0005).
 
   These controls harden the proxy; they do not replace it. systemd's IP filtering silently does nothing
@@ -433,7 +436,7 @@ Telemetry export runs only from `serve`; the executor writes its metrics to the 
 The OTLP log sink ([0004](0004-common.md)) is **off by default on the agent**, unlike the
 services. An endpoint is where the network is least likely to reach a collector — that is the point of
 managing it — and an agent that retried log export against an unreachable endpoint would spend its
-outbox budget on its own telemetry. The console sink writes logfmt to stderr, which journald on Linux
+outbox budget on its own telemetry. The console sink writes logfmt to stdout, which journald on Linux
 and the Event Log on Windows already collect, and `log.otlp.enabled` turns the sink on where a
 collector is in fact reachable. The executor is unchanged: it writes to the outbox, and `serve` ships.
 
@@ -450,7 +453,7 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 | `inventory.fullInterval`              | `RACKMARSHAL_AGENT_INVENTORY_FULL_INTERVAL`               | `6h`                                  |
 | `plugins.privileged`                  | YAML only                                           | empty                                 |
 | `plugins.grants`                      | YAML only                                           | empty (per plugin: network, paths)    |
-| `plugins.core.disabled`               | YAML only                                           | empty (`sigstore`, `sysfacts`)        |
+| `plugins.core.disabled`               | YAML only                                           | empty (every core plugin runs)        |
 | `plugins.memoryMax`                   | `RACKMARSHAL_AGENT_PLUGINS_MEMORY_MAX`                    | `256MiB`                              |
 | `plugins.sigstore.tufMirror`          | `RACKMARSHAL_AGENT_PLUGINS_SIGSTORE_TUF_MIRROR`           | `https://tuf-repo-cdn.sigstore.dev`   |
 | `plugins.sigstore.tufRefreshInterval` | `RACKMARSHAL_AGENT_PLUGINS_SIGSTORE_TUF_REFRESH_INTERVAL` | `24h`                                 |
@@ -473,8 +476,8 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
   pinned by `agent-plugins` version and per-platform SHA-256 (0014). The packaging job verifies
   each envelope against the embedded keys, and each cosign bundle, before building.
 - **Upgrades** — through the OS package manager, which a bundle may drive with a `Package` resource for
-  `agent`. The executor applies it last and restarts both units. An agent accepts the current and
-  previous bundle `apiVersion`.
+  `rackmarshal-agent`. The executor applies it last and restarts both units. An agent accepts the current
+  and previous bundle `apiVersion`.
 
 ### Testing
 
@@ -487,7 +490,8 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 - **Plugin install** — a matching pin with a wrong publisher identity, a missing transparency-log entry
   or SCT, TUF rollback, freeze (expired timestamp), and root-rotation fixtures, and `verify` mode failing
   any network call under `IPAddressDeny=any`.
-- **Handlers** — idempotence (a second apply is a no-op) in containers per distribution.
+- **Dispatch** — each kind reaches only the plugin granted its `resource:` capability; idempotence of
+  the `files`, `packages`, and `services` plugins is tested with them in 0014.
 - **Sandbox and limits** — Tengo escapes, OPA timeouts, plugin memory and pid limits, and crash
   quarantine. Fuzzing, `-race`, and the module allowlist.
 
@@ -530,9 +534,6 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
   need a different embedded root.
 - **Re-validation on trusted-root change** — re-verify installed plugins and block failures (proposed);
   should a failure also stop a running plugin?
-- **Wildcard grants** — the agent's proxy matches the grant's host names directly, so `{host: "*"}` for
-  package mirrors grants any destination. Narrow it to the mirrors an operator configures, or keep the
-  wildcard and rely on the audit log?
 
 ## References
 

@@ -220,7 +220,7 @@ NSIS installer. No cgo, so it cross-compiles normally.
 - The approval queue has a dedicated test that the same principal cannot both request and approve, and
   that the console's early refusal matches what `identity` enforces.
 - Step-up tests assert that every action in the table above rejects a session older than `stepUpMaxAge`.
-- An anchor-freshness test asserts a missed interval renders as `critical`, not as a quiet absence.
+- An anchor-freshness test asserts two missed intervals render as `critical`, not as a quiet absence.
 - axe-core runs against every page in CI, per 0016.
 
 ## Alternatives considered

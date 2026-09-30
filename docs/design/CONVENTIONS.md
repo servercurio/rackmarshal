@@ -48,7 +48,10 @@ a module, as 0001 is.
   charts, configuration prefixes, headers — where `gateway` alone would be ambiguous. The external
   `servercurio/go-*-starter` baselines keep their own names; they are not Rackmarshal repositories.
 - Libraries export from `pkg/`, with versioned API packages at `pkg/<area>/<version>` named like
-  `inventoryv1alpha1`. Executables keep `cmd/<binary>/` and `internal/`, and binaries take the repo name.
+  `inventoryv1alpha1`. Executables keep `cmd/<binary>/` and `internal/`, and binaries are
+  `rackmarshal-<repo>` (e.g. `rackmarshal-cli`, `rackmarshal-agent`). Agent plugin executables are the
+  exception: each is `rackmarshal-plugin-<name>`, however many one repository builds
+  ([0014](0014-agent-plugins.md)).
 
 ## API contract and style
 
@@ -72,14 +75,16 @@ a module, as 0001 is.
 - **Other extensions** — `x-rackmarshal-sensitive: true` on secret properties (never logged, redacted by
   the SDK); `x-rackmarshal-idempotent: true` on POST operations that are safe to retry.
 - **JSON** — lowerCamelCase properties and query parameters; RFC 3339 UTC timestamps; opaque string IDs;
-  no `format: uuid`, `date`, `email`, or `binary`, which generate `oapi-codegen/runtime` types. Lists
+  no `format: uuid`, `date`, `email`, or `binary`, which client generators map to non-stdlib types. Lists
   take `?limit=&cursor=` and return `items` and `nextCursor`; no offset paging.
 - **Headers** — `Authorization: Bearer <token>` for user and API tokens; W3C `traceparent` and
   `tracestate`; `X-Request-Id` echoed on every response. Health probes stay at `/livez`, `/readyz`, and
   `/healthz`, as in `go-echo-starter`, outside versioned paths.
-- **Tooling** — vacuum (lint with the Rackmarshal ruleset), oasdiff (breaking changes), oapi-codegen v2.8.0
-  (models in `api-schema`, client in `sdk`), run as `go run <module>@<version>` so tools
-  never enter `go.mod`. Generated code is committed; CI regenerates and fails on drift.
+- **Tooling** — vacuum (lint with the Rackmarshal ruleset), oasdiff (breaking changes), the OpenAPI
+  generator (an open question in [0002](0002-api-schema.md)), and the `sdk` client generator
+  ([0003](0003-sdk.md)); API models are hand-written Go types in `api-schema`, not generated. Tools run
+  as `go run <module>@<version>` so they never enter `go.mod`. Generated code is committed; CI
+  regenerates and fails on drift.
 
 ## API versioning, deprecation, and errors
 
@@ -158,6 +163,8 @@ a module, as 0001 is.
 - Tier logic goes through `common`'s `environment` package: `Hardened()` is true for `production`
   and `staging`; last-resort features call `AllowLastResort("<feature>")`, which refuses in `production`
   unless the kebab-case feature name is in `overrides`, and logs every override at `warn`.
+  `kek-sealed-ca-store` and `kek-sealed-signing-keys` ([0006](0006-identity.md)) are refused in
+  `production` regardless of `overrides`.
 
 ## Running multiple replicas
 
@@ -257,8 +264,8 @@ Per [0001](0001-project-repositories.md#license-headers-and-license-files):
   template's first line.
 - `paths-ignore` lists only files that cannot hold a comment: `LICENSE`, `**/go.sum`, `**/*.json`,
   `**/.gitkeep`, and embedded data such as `**/version/version.txt`.
-- Generators write the header themselves (for example `openapi-gen` for YAML output); generated JSON is
-  ignored.
+- Generators write the header themselves (for example the OpenAPI generator for YAML output); generated
+  JSON is ignored.
 - CI's `800-call-license-headers.yaml`, called from the 200 and 300 flows, installs Task and runs
   `task lint:license`, the same task developers run; `task lint` includes it and `task license:fix`
   adds missing headers.

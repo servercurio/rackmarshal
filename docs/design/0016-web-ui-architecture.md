@@ -26,9 +26,9 @@
 ([0010](0010-cli.md)), and 0007 makes operator administration pages an explicit non-goal for the
 SSO service. Two loose ends in the existing set point at this document: 0008 asks outright whether "a
 web console [will] need CORS on the operator ingress", and turns CORS and CSRF middleware off on the
-grounds that "no browser origin calls the gateway"; and 0010's device authorization grant "needs a
-browser on the same machine and fails over SSH", which 0010 records as a candidate for a second login
-method.
+grounds that "no browser origin calls the gateway"; and 0010 weighs a loopback redirect with PKCE, which
+needs a browser on the same machine and fails over SSH, against the device authorization grant, which
+makes the operator carry a code to another browser.
 
 This document adds the surfaces, fixes the stack they share, and answers both questions.
 
@@ -101,7 +101,7 @@ there. Self-hosting also removes the third-party origins a CSP would otherwise h
 #### How a page reaches the API
 
 ```
-browser ──TLS──► portal ──mTLS + Bearer──► gateway ──► inventory, …
+browser ──TLS──► portal ──TLS + Bearer──► gateway ──► inventory, …
    │                  │
    │                  └── session cookie ⇄ server-side session: access + refresh token
    └── holds a session cookie only; never a Rackmarshal API token
@@ -140,9 +140,9 @@ every state-changing request carries a CSRF token regardless.
 
 #### `cli` login through a loopback callback
 
-0010 keeps the device authorization grant, which works over SSH but requires the operator to carry a
-code to another machine. This document adds a second method for the case where a browser is available on
-the same machine, using the same authorization code flow the portals use:
+The device authorization grant works over SSH but requires the operator to carry a code to another
+machine. For the common case of a browser on the same machine, 0010's default login uses the same
+authorization code flow the portals use:
 
 1. `rackmarshal-cli login` binds a listener on `127.0.0.1:0` — a kernel-assigned port, never a fixed one — and
    generates a PKCE verifier and a `state` value.
@@ -181,11 +181,14 @@ Per CONVENTIONS, every direct dependency is justified with what it pulls in.
 
 - **`github.com/a-h/templ` v0.3.1020** — runtime is a small package; the generator runs through
   `go run github.com/a-h/templ/cmd/templ@v0.3.1020` so it never enters `go.mod`.
-- **`github.com/labstack/echo/v4`** — already the HTTP server in `go-echo-starter` and in 0006–0009.
-- **`github.com/gorilla/csrf`** — double-submit CSRF tokens. Alternative considered: Echo's own CSRF
-  middleware, which is already present; the decision is recorded under Alternatives.
-- **`sdk`** — the only API client, with `pkg/enroll` for the service certificate and
-  `pkg/tlsconfig` for the gateway connection.
+- **`github.com/labstack/echo/v5` v5.3.1** — already the HTTP server in `go-echo-starter` and in
+  0006–0009.
+- **No CSRF module** — the standard library's
+  [`http.CrossOriginProtection`](https://pkg.go.dev/net/http#CrossOriginProtection) (Go 1.25) plus a
+  synchronizer token kept in the server-side session. `sso` uses the same header check, sealing its
+  token in the flow cookie because it has no session store (0007). The rejected CSRF libraries are under
+  Alternatives.
+- **`sdk`** — the only API client, with `pkg/tlsconfig` for the environment-pinned gateway connection.
 - **`common`** — logging and telemetry, as every Rackmarshal Go repository does.
 - **An OIDC relying-party library** — open question; `coreos/go-oidc` pulls `go-jose`, which is a larger
   graph than the flow needs. A hand-written code-exchange client over `sdk`'s pinned HTTP client is
@@ -220,9 +223,11 @@ failure, and when the environment ID of the session does not match the process's
   font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`.
   No `unsafe-inline` and no `unsafe-eval`, which the Alpine CSP build and self-hosted assets make
   achievable. Inline styles in templates are forbidden by lint rather than by policy exception.
-- **CSRF** — every unsafe method carries a token bound to the session, sent by htmx through
-  `hx-headers` on the body element and by a hidden field in non-JS forms. htmx is configured with
-  `selfRequestsOnly: true` so an injected attribute cannot direct a request to another origin.
+- **CSRF** — `http.CrossOriginProtection` rejects cross-origin unsafe requests using `Sec-Fetch-Site` and
+  `Origin`. Every unsafe method also carries a synchronizer token stored in the server-side session, sent
+  by htmx through `hx-headers` on the body element and by a hidden field in non-JS forms. htmx is
+  configured with `selfRequestsOnly: true` so an injected attribute cannot direct a request to another
+  origin.
 - **Response headers** — the starter's hardened set from 0007: HSTS, `nosniff`, `frame-ancestors 'none'`,
   `Referrer-Policy: same-origin`, and `Cache-Control: no-store` on every authenticated response.
 - **Tenancy** — the portal derives the tenant from the session principal and never from a path or query
@@ -308,9 +313,11 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
   should not share a process with the tenant-facing application.
 - **Folding the portals into `gateway`** — would avoid two new services, but the gateway is an
   authorization enforcement point whose value depends on being small.
-- **Echo's built-in CSRF middleware** — one less dependency. `gorilla/csrf` is proposed instead for its
-  explicit `__Host-` handling and per-form token rotation; this is a weak preference and either is
-  defensible.
+- **[`gorilla/csrf`](https://github.com/gorilla/csrf)** — explicit `__Host-` handling and per-form token
+  rotation. Rejected: an extra module, and its token lives in its own signed cookie rather than being
+  bound to the server-side session.
+- **Echo's built-in CSRF middleware** — already linked, but it too keeps its token in a separate cookie
+  rather than the server-side session.
 - **Go's `html/template` instead of templ** — no code generation step and nothing new to learn.
   Rejected because errors surface at render time in a handler rather than at build time, and these
   surfaces render tables of security-relevant state.
@@ -344,6 +351,8 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
 - [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636) — PKCE.
 - [RFC 8252 §7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3) — loopback redirection for native
   applications.
+- [`net/http.CrossOriginProtection`](https://pkg.go.dev/net/http#CrossOriginProtection) — added in
+  Go 1.25.
 - [RFC 6265bis](https://www.rfc-editor.org/rfc/rfc6265bis#name-cookie-name-prefixes) — `__Host-` cookie
   prefix.
 - [WCAG 2.2](https://www.w3.org/TR/WCAG22/) — the AA conformance level 0007 already commits to.

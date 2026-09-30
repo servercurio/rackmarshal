@@ -11,8 +11,8 @@
   the Sigstore validator, system facts, packages, files, and services — released together on one
   version. Each binary ships with a SHA-256, a keyless cosign bundle signed from GitHub Actions, and a
   CycloneDX SBOM, so `provisioner` can verify each release and `agent` can pin and install
-  exactly the plugin versions its desired state names. The core plugins, `sigstore` and `sysfacts`, are
-  also core-signed with a KMS- or HSM-held key and bundled in every `agent` package.
+  exactly the plugin versions its desired state names. All five are core plugins: also core-signed
+  with a KMS- or HSM-held key and bundled in every `agent` package.
 
 > An initial draft with concrete proposals, bounded by the
 > [Resolved decisions](0001-project-repositories.md#resolved-decisions) in 0001. Conventions other
@@ -33,7 +33,7 @@ grants, and environment check come from [0013](0013-agent-plugin-sdk.md).
 
 - A modest, justified first plugin set for common server convergence.
 - Core plugins that every agent package bundles and trusts through a core signature: the on-host
-  Sigstore validator and system facts.
+  Sigstore validator, system facts, and the package, file, and service resource plugins.
 - A layout that keeps each binary's dependencies and privileges separate.
 - Release artifacts that meet the provisioner's and the host validator's verification: signature,
   digest, SBOM, and manifest.
@@ -53,7 +53,7 @@ grants, and environment check come from [0013](0013-agent-plugin-sdk.md).
 
 - Source, tests, manifests, and releases for the first-party plugins.
 - Per-plugin build matrices, SBOMs, signatures, and a signed release index.
-- Core signing of `sigstore` and `sysfacts`, and the core artifacts `agent` packages.
+- Core signing of all five plugins, and the core artifacts `agent` packages.
 - A compatibility statement across plugin releases, SDK versions, and protocol versions.
 
 ### Interfaces
@@ -83,9 +83,9 @@ agent-plugins/
 # plugins.yaml
 - { name: sigstore, core: true,  platforms: [linux/amd64, linux/arm64] }
 - { name: sysfacts, core: true,  platforms: [linux/amd64, linux/arm64] }
-- { name: packages, core: false, platforms: [linux/amd64, linux/arm64] }
-- { name: files,    core: false, platforms: [linux/amd64, linux/arm64] }
-- { name: services, core: false, platforms: [linux/amd64, linux/arm64] }
+- { name: packages, core: true,  platforms: [linux/amd64, linux/arm64] }
+- { name: files,    core: true,  platforms: [linux/amd64, linux/arm64] }
+- { name: services, core: true,  platforms: [linux/amd64, linux/arm64] }
 ```
 
 - **Why one module** — plugins are executables nobody imports. One `go.mod` means one set of
@@ -101,9 +101,9 @@ agent-plugins/
 |------------|------|-------------------------------------------|------------------------------------------|---------------------------------------|
 | `sigstore` | yes  | `verifier:sigstore`                       | —                                        | unprivileged; TUF egress in `refresh` |
 | `sysfacts` | yes  | `facts`                                   | —                                        | unprivileged                          |
-| `packages` | no   | `resource:…/Package`                      | `Package`                                | root, exec, network                   |
-| `files`    | no   | `resource:…/File`, `resource:…/Directory` | `File`, `Directory`                      | root, granted paths                   |
-| `services` | no   | `resource:…/Service`                      | `Service`                                | root, exec `systemctl`                |
+| `packages` | yes  | `resource:…/Package`                      | `Package`                                | root, exec, network                   |
+| `files`    | yes  | `resource:…/File`, `resource:…/Directory` | `File`, `Directory`                      | root, granted paths                   |
+| `services` | yes  | `resource:…/Service`                      | `Service`                                | root, exec `systemctl`                |
 
 - **`sigstore`** — the on-host validator behind 0013's `VerifierService`, on sigstore-go v1.3.0
   `pkg/verify` and `pkg/tuf`. `RefreshTrust` fetches TUF metadata from the granted repository and
@@ -134,13 +134,17 @@ agent-plugins/
   (not re-checked). Separate binaries keep the unprivileged fact collector away from root and network
   grants.
 - **Why these are core** — `sigstore` must be present before any other plugin can be installed, and
-  `sysfacts` lets every agent report facts before its first bundle. `packages`, `files`, and `services`
-  stay downloadable, pinned by bundles.
+  `sysfacts` lets every agent report facts before its first bundle. The agent core has no built-in
+  handlers, so `packages`, `files`, and `services` are bundled too: every agent can converge basic
+  state from its first bundle without first downloading a plugin. Newer releases of all five still
+  arrive through a bundle pin with their core envelope.
 - **Deferred** — users and groups, firewall, scheduled jobs, containers, Windows services, and non-Linux
   facts. Each needs its own privilege review.
 
-The kinds' schemas and Go types live in `api-schema` (`desiredstatev1alpha1`, 0002), which has no
-dependencies.
+`files`, `packages`, and `services` provide `File`, `Directory`, `Package`, and `Service`. The agent
+core has no built-in handlers: it is kind-agnostic and dispatches every kind to the plugin granted it
+([0012](0012-agent.md)). The kinds' schemas and Go types live in `api-schema` (`desiredstatev1alpha1`,
+0002), which has no dependencies.
 
 ### Dependencies
 
@@ -193,7 +197,8 @@ Plugins keep no state. Installed binaries on hosts belong to 0012.
 
 ### Environment awareness
 
-Plugins require `environment` configuration and perform 0013's check. Tier logic uses `common`.
+Plugins carry no environment configuration; name, tier, and ID arrive from the agent in `Init` (0013).
+Tier logic uses `common`.
 For example, `packages` makes installing from unauthenticated repositories the last-resort feature
 `unauthenticated-packages`, which `production` refuses unless overridden.
 
@@ -205,9 +210,9 @@ only, since arguments can carry resource data. No telemetry export.
 
 ### Configuration
 
-Prefixes are `RACKMARSHAL_PLUGIN_SIGSTORE`, `_SYSFACTS`, `_PACKAGES`, `_FILES`, and `_SERVICES`, with the
-SDK's `environment` and `rpc` keys and `common`'s `logging`. Grants carry paths, executables, and
-network destinations, so plugin keys stay few:
+Prefixes are `RACKMARSHAL_PLUGIN_SIGSTORE`, `_SYSFACTS`, `_PACKAGES`, `_FILES`, and `_SERVICES`, with
+the SDK's `rpc` keys and `common`'s `logging`; the environment is not configured here (0013). Grants
+carry paths, executables, and network destinations, so plugin keys stay few:
 
 | YAML          | Variable                             | Default                          |
 |---------------|--------------------------------------|----------------------------------|
@@ -256,11 +261,11 @@ plugin release, since the control plane could then neither validate nor police t
 declares ([0021](0021-plugin-extensibility.md)).
 
 `.releaserc.json` keeps the starter's analyzer rules, with a `publishCmd` of
-`task build && task hash && task sign && task coresign && task sbom && task index && task verify`.
+`task build && task bundle && task hash && task sign && task coresign && task sbom && task index && task verify`.
 The release job installs cosign first. `task sign` and `task verify` run:
 
 ```sh
-repo=servercurio/agent-plugins
+repo=rackmarshal/agent-plugins
 wf=.github/workflows/800-call-semantic-release.yaml
 cosign sign-blob --yes --bundle "bin/${f}.sigstore.json" "bin/${f}"
 cosign verify-blob "bin/${f}" --bundle "bin/${f}.sigstore.json" \
@@ -287,9 +292,10 @@ cosign verify-blob "bin/${f}" --bundle "bin/${f}.sigstore.json" \
 `task coresign` runs for each plugin that `plugins.yaml` marks `core: true`, per platform:
 
 1. **Statement** — `tools/coresign` writes the payload
-   `{"name":"sigstore","version":"0.4.0","platform":"linux/amd64","sha256":"…","protocolVersions":[1]}`
-   and its [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md) pre-authentication
-   encoding for payload type `application/vnd.rackmarshal.core-plugin.v1+json`.
+   `{"name":"sigstore","version":"0.4.0","platform":"linux/amd64","sha256":"…","protocolVersions":[1],"environmentIds":["*"]}`
+   (`environmentIds` is `["*"]` for a general release, or the environments a scoped statement is valid
+   for; 0012) and its [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md)
+   pre-authentication encoding for payload type `application/vnd.rackmarshal.core-plugin.v1+json`.
 2. **Sign** — proposed: the cloud KMS CLI signs those bytes with the P-256 key, with short-lived
    credentials from GitHub OIDC: `aws kms sign --message-type RAW --signing-algorithm ECDSA_SHA_256`,
    which returns a DER signature ([AWS CLI](https://docs.aws.amazon.com/cli/latest/reference/kms/sign.html)),
@@ -312,7 +318,7 @@ metadata: { name: servercurio }
 spec:
   keyless:
     issuer: https://token.actions.githubusercontent.com
-    repository: servercurio/agent-plugins
+    repository: rackmarshal/agent-plugins
     workflow: .github/workflows/800-call-semantic-release.yaml
     refs: [refs/heads/main, "refs/heads/release/*"]
 ---
@@ -347,9 +353,9 @@ spec:
    pinning the older version in the bundle, which re-downloads and re-verifies it. Every launch pins
    the digest through `SecureConfig`.
 
-Core plugins take a different path: `agent`'s packaging consumes `sigstore` and `sysfacts` from a
-release pinned by version and per-platform SHA-256, verifying the core envelopes and cosign bundles
-before building (0012). A newer core release can reach hosts through a bundle pin with its
+Core plugins take a different path: `agent`'s packaging consumes all five from a release pinned by
+version and per-platform SHA-256, verifying the core envelopes and cosign bundles before building
+(0012). A newer core release can reach hosts through a bundle pin with its
 `<asset>.core.dsse.json`.
 
 #### SDK compatibility
@@ -399,8 +405,6 @@ current, and when the SDK drops a protocol, plugins keep serving N-1 until the a
 - **GitHub artifact attestations only** — also Sigstore-backed, but fetched per artifact from GitHub,
   while bundles next to assets let the provisioner verify releases imported from mirrors.
 - **gopsutil** (measured above) and **go-systemd over D-Bus** (adds `godbus`; not measured).
-- **Deviation from [CONVENTIONS.md](CONVENTIONS.md)** (*Go modules and layout*: binaries take the repo
-  name) — binaries are named `rackmarshal-plugin-<name>`, which maps to `RACKMARSHAL_PLUGIN_<NAME>`.
 
 ## Open questions
 

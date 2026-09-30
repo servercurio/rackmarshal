@@ -113,7 +113,7 @@ entry point, so managed hosts never share an ingress with administrators. See
 | `provisioner`      | Product domain · Go service / API  | Desired-state authority: owns directives/rules (custom YAML + OPA policies + Tengo scripts) and reconciliation; enforces agentless devices directly, and hands directives to `agent` for agent-capable endpoints                                                                                                                        | `go-echo-starter`                |
 | `agent`            | Product domain · Go daemon         | Endpoint daemon on managed hosts that can run it; enforces desired-state directives (custom YAML + OPA policies + Tengo scripts) locally, collects inventory, and runs plugins as separate processes. Reaches `inventory`, `identity`, and `provisioner` through `gateway`'s mutual-TLS agent ingress via `sdk` | `go-cli-starter`                 |
 | `agent-plugin-sdk` | Product domain · Shared library    | Plugin interface/contract + host-side helpers that every agent plugin builds against — the stable extension point for `agent`                                                                                                                                                                                                           | `go-library-starter`             |
-| `agent-plugins`    | Product domain · Plugin collection | First-party / officially-maintained agent plugin executables, built against `agent-plugin-sdk`, including the core plugins (`sigstore` validator, `sysfacts`) bundled with `agent`                                                                                                                                                | `go-cli-starter`                 |
+| `agent-plugins`    | Product domain · Plugin collection | First-party / officially-maintained agent plugin executables, built against `agent-plugin-sdk`, including the core plugins (`sigstore` validator, `sysfacts`, `packages`, `files`, `services`) bundled with `agent`                                                                                                               | `go-cli-starter`                 |
 | `plugin-starter`   | Product domain · Template          | Project-owned scaffold third parties clone to author a new agent plugin executable (pre-wired to `agent-plugin-sdk`)                                                                                                                                                                                                                    | `go-cli-starter`                 |
 | `portal`           | Platform · Go service + site       | Tenant-facing web portal: the endpoints a tenant owns, the desired state applied to them, and whether reality matches. Renders plans before they are applied. Holds no API token in the browser                                                                                                                                               | `go-echo-starter`                |
 | `console`          | Platform · Go service + site       | Platform administration web console: tenants, identity and federation, the environment CA and key backend, agent enrollment, plugin publishers, and the audit chain. Holds the two-person approval queue                                                                                                                                      | `go-echo-starter`                |
@@ -188,9 +188,9 @@ intermediate CA key is held in one of two backends:
   enters the service's memory or disk. This is the expected backend for production.
 - **KEK-sealed store in `identity` (last resort)** — the key is stored encrypted and decrypted in
   memory to sign. Its key-encryption key (KEK) comes from an external secret manager at startup, is held
-  only in memory, and never sits on disk beside the encrypted CA key. Use it for testing and staging, or
-  in `production` only when no HSM or KMS is available, through the explicit, logged override described
-  under [Environment awareness](#environment-awareness). While the key is in memory, a compromised
+  only in memory, and never sits on disk beside the encrypted CA key. Use it for testing and staging,
+  where every use is logged; `production` refuses it with no override (see
+  [Environment awareness](#environment-awareness)). While the key is in memory, a compromised
   `identity` can steal it and issue agent certificates.
 
 A new agent bootstraps as follows, modeled on
@@ -234,15 +234,16 @@ by `agent`, so each plugin is its own executable and a failing plugin is isolate
 Plugins talk to `agent` over gRPC using [`hashicorp/go-plugin`](https://github.com/hashicorp/go-plugin).
 Two kinds of plugins are trusted differently:
 
-- **Core plugins** — `sigstore` (the on-host Sigstore validator) and `sysfacts` are built in
-  `agent-plugins`, bundled in every `agent` package, enabled by default, and installed
-  root-owned and read-only. Operators may disable them in root-owned local configuration but cannot
-  replace them with binaries that are not core-signed. Each ships a
-  [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md) envelope over its name,
-  version, platform, SHA-256, and protocol versions, signed with a Rackmarshal core-plugin key (ECDSA P-256,
-  held in an HSM or cloud KMS and used only by the `agent-plugins` release workflow). The agent
-  embeds the current and next public keys and verifies the envelope with standard-library ECDSA before
-  install and before every launch, so core-signed updates can arrive without a new agent release.
+- **Core plugins** — `sigstore` (the on-host Sigstore validator), `sysfacts`, and the `packages`,
+  `files`, and `services` resource plugins are built in `agent-plugins`, bundled in every `agent`
+  package, enabled by default, and installed root-owned and read-only. Operators may disable them in
+  root-owned local configuration but cannot replace them with binaries that are not core-signed. Each
+  ships a [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md) envelope over its
+  name, version, platform, SHA-256, protocol versions, and environment IDs (`["*"]` for a general
+  release), signed with a Rackmarshal core-plugin key (ECDSA P-256, held in an HSM or cloud KMS and used
+  only by the `agent-plugins` release workflow). The agent embeds the current and next public keys and
+  verifies the envelope with standard-library ECDSA before install and before every launch, so
+  core-signed updates can arrive without a new agent release.
 - **Other plugins** — releases are signed with
   [Sigstore](https://docs.sigstore.dev/cosign/signing/overview/) (cosign). `provisioner` verifies
   those signatures against trusted publisher identities when an operator imports a plugin release, and
@@ -257,9 +258,9 @@ Before every launch, the agent re-checks the core signature or bundle pin, then 
 SHA-256 through go-plugin's
 [`SecureConfig`](https://pkg.go.dev/github.com/hashicorp/go-plugin#SecureConfig). The agent binary links
 no Sigstore verifier: sigstore-go v1.3.0's verifier compiles in 71 modules, and the validator plugin that
-runs it links 79 with go-plugin (measured 2026-09-15). The agent also passes its
-environment ID to each plugin at startup, and a plugin refuses to serve an agent whose environment ID
-differs from the one it was configured for.
+runs it links 79 with go-plugin (measured 2026-09-15). A plugin carries no environment configuration of
+its own: it receives the environment (name, tier, and ID) from the agent in `Init`, and the agent refuses
+to launch a plugin with `<PREFIX>_ENVIRONMENT_*` set.
 
 - **`agent-plugin-sdk`** — the stable contract plugins build against.
 - **`agent-plugins`** — the first-party plugins maintained by the project, including the core
@@ -283,11 +284,10 @@ as possible:
 - **Traces and metrics** — the OpenTelemetry Go API and official SDK; both signals are stable
   ([project status](https://github.com/open-telemetry/opentelemetry-go#project-status)).
 - **Export** — a Rackmarshal-built OTLP/HTTP exporter on `go.opentelemetry.io/proto/slim/otlp` and `net/http`.
-  The official OTLP exporters link 15 third-party modules, including gRPC, even when exporting over
-  HTTP (measured on otel v1.46.0;
-  [opentelemetry-go#2579](https://github.com/open-telemetry/opentelemetry-go/issues/2579)). The custom
-  exporter measures 16 linked modules (0004). Rackmarshal keeps this exporter permanently and owns its retries,
-  compression, TLS, and configuration.
+  The official OTLP exporters link gRPC even when exporting over HTTP (measured on otel v1.46.0;
+  [opentelemetry-go#2579](https://github.com/open-telemetry/opentelemetry-go/issues/2579)); the custom
+  exporter links no gRPC (18 third-party modules in all, measured in 0004). Rackmarshal keeps this
+  exporter permanently and owns its retries, compression, TLS, and configuration.
 - **Environment** — every log event and exported telemetry resource carries the environment name; see
   [Environment awareness](#environment-awareness).
 
@@ -355,8 +355,9 @@ Every Rackmarshal component — the services, `cli`, `agent`, agent plugins, and
 - **Hardened defaults by tier** — `production` and `staging` default to hardened settings (for example
   TLS, secure cookies, and the OpenAPI UI disabled); `development` relaxes them. This replaces the
   per-setting "change this in production" guidance in the `go-*-starter` configuration.
-- **Last-resort features gated** — features marked last resort or testing-only, such as the KEK-sealed
-  CA key store, are refused in `production` unless explicitly overridden, and every override is logged.
+- **Last-resort features gated** — features marked last resort or testing-only, such as a plaintext
+  telemetry endpoint, are refused in `production` unless explicitly overridden, and every override is
+  logged. The KEK-sealed CA key and signing-key stores are refused in `production` with no override.
 - **Isolation** — each environment has its own CA, enrollment tokens, and credentials. A service or
   agent from one environment is rejected by another; see [Environment identity](#environment-identity).
 - **Tagged logs and telemetry** — `common` adds the environment name to every log event and sets
@@ -471,8 +472,9 @@ Answers to this document's earlier open questions (2026-09-14 to 2026-09-15). Th
   API is still changing, and it can be split per service later.
 - **Telemetry stack** — `common` wraps the starters' zerolog logging, correlates logs with traces
   through a zerolog hook, and uses the OpenTelemetry API and SDK with a Rackmarshal-built OTLP/HTTP exporter.
-  This was the lowest-dependency OpenTelemetry option measured, because the official OTLP exporters link
-  gRPC even over HTTP. See [Logging and telemetry](#logging-and-telemetry-common).
+  It was chosen because the official OTLP exporters link gRPC even over HTTP, and the custom exporter
+  links none (18 third-party modules in all; see 0004). See
+  [Logging and telemetry](#logging-and-telemetry-common).
 - **Ansible execution** — Conftest checks OPA policies in pull-request CI; a dedicated control node runs
   the merged playbooks, keeping deployment credentials out of CI.
 - **OPA evaluation** — Embedded in both `provisioner` and `agent`, so a tampered or stale
@@ -487,9 +489,9 @@ Answers to this document's earlier open questions (2026-09-14 to 2026-09-15). Th
   issued by `identity`, kept apart from the operator and third-party entry point.
 - **Agent enrollment** — `identity` runs an internal CA and signs CSRs presented with a single-use
   enrollment token created in `cli` (1 hour by default, 24 hours maximum); the token pins the CA
-  hash for first contact. The intermediate CA key lives in an HSM or cloud KMS (preferred); a store
-  sealed with a KEK from an external secret manager is a last resort for testing, staging, or
-  production without an HSM or KMS. Agent keys are generated on the host and
+  hash for first contact. The intermediate CA key lives in an HSM or cloud KMS, which `production`
+  requires; a store sealed with a KEK from an external secret manager is a last resort for testing and
+  staging only. Agent keys are generated on the host and
   hardware-backed when available. Certificates last 30–90 days per tenant (default 30) and renew at
   two-thirds of their lifetime, with OCSP checks, CRL fallback, and fail-closed revocation. See
   [Agent enrollment](#agent-enrollment).
@@ -516,19 +518,19 @@ Answers to this document's earlier open questions (2026-09-14 to 2026-09-15). Th
   pipeline. See [Rackmarshal's own infrastructure](#rackmarshals-own-infrastructure).
 - **Plugin transport** — gRPC through `hashicorp/go-plugin`, which handles the handshake, process
   lifecycle, and optional mutual TLS.
-- **Plugin signing** — Core plugins (`sigstore`, the on-host Sigstore validator, and `sysfacts`) are
-  bundled in every `agent` package, enabled by default, and root-owned and read-only; operators
-  may disable but not replace them. They carry DSSE signatures from a Rackmarshal core-plugin ECDSA P-256 key
-  held in an HSM or cloud KMS, which the agent verifies against embedded current and next public keys
-  before install and every launch. Other plugin releases carry Sigstore (cosign) signatures:
-  `provisioner` verifies them against trusted publisher identities at import and pins the verified
-  SHA-256 digests, with the publisher identity, in the directive bundles it signs; a host installs one
-  only when the digest matches the pin and the core validator verifies the Sigstore bundle against that
-  identity with a TUF-verified trusted root. TUF metadata is refreshed by the unprivileged agent process
-  with egress only to Sigstore's TUF repository or a mirror, and verified in the network-free executor.
-  Every launch pins the SHA-256 through go-plugin `SecureConfig`. The agent binary links no Sigstore
-  verifier: sigstore-go v1.3.0's verifier compiles in 71 modules, confined to the validator plugin (79
-  with go-plugin; measured 2026-09-15).
+- **Plugin signing** — Core plugins (`sigstore`, the on-host Sigstore validator; `sysfacts`; and the
+  `packages`, `files`, and `services` resource plugins) are bundled in every `agent` package, enabled by
+  default, and root-owned and read-only; operators may disable but not replace them. They carry DSSE
+  signatures from a Rackmarshal core-plugin ECDSA P-256 key held in an HSM or cloud KMS, which the agent
+  verifies against embedded current and next public keys before install and every launch. Other plugin
+  releases carry Sigstore (cosign) signatures: `provisioner` verifies them against trusted publisher
+  identities at import and pins the verified SHA-256 digests, with the publisher identity, in the
+  directive bundles it signs; a host installs one only when the digest matches the pin and the core
+  validator verifies the Sigstore bundle against that identity with a TUF-verified trusted root. TUF
+  metadata is refreshed by the unprivileged agent process with egress only to Sigstore's TUF repository
+  or a mirror, and verified in the network-free executor. Every launch pins the SHA-256 through go-plugin
+  `SecureConfig`. The agent binary links no Sigstore verifier: sigstore-go v1.3.0's verifier compiles in
+  71 modules, confined to the validator plugin (79 with go-plugin; measured 2026-09-15).
 - **License headers** — Every repository carries an Apache-2.0 `LICENSE` and identifier-only SPDX
   headers in every file, enforced by license-eye in pull-request and main-branch checks, with an explicit
   ignore list for files that cannot hold a comment. See

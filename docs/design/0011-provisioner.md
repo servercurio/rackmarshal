@@ -172,9 +172,9 @@ verifier).
 - **Pins** — each bundle pin carries the plugin name, version, per-platform SHA-256, and the publisher
   identity verified at import: the keyless issuer, repository, workflow, and refs, or the public key.
   The host validator checks the same identity before install ([0012](0012-agent.md)).
-- **Core plugins** — `sigstore` and `sysfacts` ship in agent packages and are trusted through the
-  core-plugin key embedded in the agent (0012); a pin for a newer core release also needs its core-signed
-  envelope on the host ([0014](0014-agent-plugins.md)).
+- **Core plugins** — `sigstore`, `sysfacts`, `packages`, `files`, and `services` ship in agent packages
+  and are trusted through the core-plugin key embedded in the agent (0012); a pin for a newer core
+  release also needs its core-signed envelope on the host ([0014](0014-agent-plugins.md)).
 - **Trusted root** — proposed: refresh `trusted_root.json` through Sigstore's TUF repository
   (sigstore-go `pkg/tuf`), with a packaged fallback for air-gapped environments.
 - **Withdrawal** — removing a `Plugin` version or its `PluginPublisher` drops its pins from the
@@ -197,8 +197,8 @@ Level-triggered and idempotent, modeled on Kubernetes controllers
    devices, run the driver's `Observe` → `Plan` → `Apply` → `Observe`.
 6. **Record** status and requeue failures with exponential backoff (cap 30 minutes).
 
-Inventory changes arrive by polling a change cursor from [0009](0009-inventory.md) (to be agreed);
-until it exists, the resync interval covers them.
+Inventory changes arrive by long-polling [0009](0009-inventory.md)'s `GET /endpoint-events` with a
+durable cursor; the resync interval remains a backstop.
 
 #### Policy (OPA)
 
@@ -239,8 +239,10 @@ deny contains {"code": "command_denied", "message": msg} if {
   (2024-02-29) lacks later fixes such as regex alternation (#460) and `int == float` (#477).
 - **Sandbox** — `SetImports(stdlib.GetModuleMap("text", "math", "json", "base64", "hex", "enum"))`;
   `EnableFileImport(false)`; no `os`, `fmt` (prints), `times`, or `rand` (non-deterministic).
-  `SetMaxAllocs(100000)`, `SetMaxConstObjects(10000)`, source up to 64 KiB, output up to 1 MiB, and
-  `RunContext` with a 2 s deadline by default. Compiled scripts are cached and `Clone`d per run.
+  `SetMaxAllocs` with the Script's `spec.maxAllocs`, which defaults to the service ceiling
+  `script.maxAllocs` (100,000) and is clamped to it; `SetMaxConstObjects(10000)`, source up to 64 KiB,
+  output up to 1 MiB, and `RunContext` with a 2 s deadline by default. Compiled scripts are cached and
+  `Clone`d per run.
 - **Host functions** — a `rackmarshal` module with `facts()` (immutable endpoint facts), `input()`, and
   `fail(message)`. Results must be JSON-encodable and are schema-validated like any other resource.
 
@@ -401,6 +403,7 @@ between them.
 | Setting                        | `production` / `staging`           | `test` / `development`     |
 |--------------------------------|------------------------------------|----------------------------|
 | Script and policy limit ceilings | fixed at defaults                | may be raised              |
+| Per-script limits              | clamped to the ceilings            | clamped to the ceilings    |
 | Rego print statements          | off                                | `development` only         |
 | `insecure-device-transport`    | refused in `production` unless overridden | allowed, logged     |
 | OpenAPI UI                     | off                                | on                         |
@@ -429,7 +432,7 @@ from [CONVENTIONS.md](CONVENTIONS.md).
 | `plugins.result.maxBytes`    | `RACKMARSHAL_PROVISIONER_PLUGINS_RESULT_MAX_BYTES`     | `16384`                      |
 | `reconcile.leaseDuration`    | `RACKMARSHAL_PROVISIONER_RECONCILE_LEASE_DURATION`     | `60s`                        |
 | `policy.evalTimeout`         | `RACKMARSHAL_PROVISIONER_POLICY_EVAL_TIMEOUT`          | `500ms`                      |
-| `script.maxAllocs`           | `RACKMARSHAL_PROVISIONER_SCRIPT_MAX_ALLOCS`            | `100000`                     |
+| `script.maxAllocs`           | `RACKMARSHAL_PROVISIONER_SCRIPT_MAX_ALLOCS`            | `100000` (script ceiling)    |
 | `script.timeout`             | `RACKMARSHAL_PROVISIONER_SCRIPT_TIMEOUT`               | `2s`                         |
 | `bundle.validity`            | `RACKMARSHAL_PROVISIONER_BUNDLE_VALIDITY`              | `168h`                       |
 | `bundle.maxWait`             | `RACKMARSHAL_PROVISIONER_BUNDLE_MAX_WAIT`              | `60s`                        |
@@ -441,7 +444,7 @@ from [CONVENTIONS.md](CONVENTIONS.md).
 ### Build, release & versioning
 
 Bootstrap from `go-echo-starter`, replacing its logging with `common` and its route-metadata
-OpenAPI with the embedded contract from 0002. Binary `provisioner`, shipped as the
+OpenAPI with the embedded contract from 0002. Binary `rackmarshal-provisioner`, shipped as the
 [CONVENTIONS.md](CONVENTIONS.md#deployment-artifacts) deployment artifacts: the starter's Dockerfile and
 Helm chart (with the enrollment init container), signed deb and rpm packages, and a Windows installer.
 Database migrations are forward-only goose files; bundles are versioned by payload type so agents can
@@ -475,9 +478,9 @@ support the current and previous `apiVersion`.
 - **On-host verification only** — without an import check, an unverifiable release could be pinned and
   would fail on every host instead of at admission; see
   [0012](0012-agent.md#sigstore-verifier-measurements).
-- **Out-of-process drivers over go-plugin, in this process** — isolates faults, but would bring gRPC into
-  the service's own address space. [0021](0021-plugin-extensibility.md) instead runs a plugin service as a
-  separate process on a local socket, which keeps the isolation; the
+- **Out-of-process drivers over go-plugin** — isolates faults, but would link go-plugin and gRPC into the
+  service. Rejected: drivers are linked into the provisioner binary. [0021](0021-plugin-extensibility.md)
+  instead runs a plugin service as a separate process on a local socket, which keeps the isolation; the
   [API style convention](CONVENTIONS.md#api-contract-and-style) was widened to cover a host and its
   plugins rather than read around.
 - **A job queue library such as River** — more features, but a dependency for what `SKIP LOCKED` does.
@@ -486,7 +489,6 @@ support the current and previous `apiVersion`.
 
 ## Open questions
 
-- **Inventory change feed** — cursor polling (proposed), or does 0009 call the provisioner?
 - **Principal propagation** — the header or token the gateway forwards, and the permission names (0006,
   0008).
 - **Secret providers** beyond mounted files — Vault, cloud secret managers?

@@ -210,7 +210,7 @@ on role and playbook YAML; the rest run on rendered output. Initial rule set (pr
 | inventory  | cluster `jwks` fingerprints match the environment's ceremony record                        |
 | inventory  | `identity` and PostgreSQL never bind public interfaces or public load balancers     |
 | inventory  | images pinned by `@sha256:`; charts, packages, installers by SHA-256; `schemaVersion` never drops |
-| inventory  | `production`: no `kek-sealed` or other last-resort feature without an override            |
+| inventory  | `production`: no `kek-sealed-*` feature at all; no other last-resort feature without an override |
 | inventory  | service token TTL ≤ 1h; service certificates exactly 7 days; secrets are references only  |
 | content    | secret-using tasks set `no_log`; `shell` has `changed_when`; no `validate_certs: false`     |
 | kubernetes | all containers non-root, read-only root, no escalation, drop `ALL`, `RuntimeDefault` seccomp |
@@ -295,8 +295,9 @@ Performed by two people on an offline, freshly imaged workstation, with a writte
    ceremony), and commit the bundle, fingerprints, and JWKS in the pull request that adds the inventory.
 
 Adding a cluster or rotating its signing keys repeats step 5 alone, with `CODEOWNERS` review and no use of
-the root. `production` requires an HSM or KMS for both root and intermediate. `test` and `staging` may
-use the KEK-sealed intermediate store, gated as in 0006.
+the root. `production` requires an HSM or KMS for the root, the intermediate, and `identity`'s token
+signing keys, with no override. `staging` and lower may use the KEK-sealed stores (`kek-sealed-ca-store`,
+`kek-sealed-signing-keys`), and each use is logged, as in 0006.
 
 #### Service certificate bootstrap
 

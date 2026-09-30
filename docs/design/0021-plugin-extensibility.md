@@ -30,9 +30,10 @@ That is enough for a plugin whose whole job is to converge a kind on a host. It 
 things the design has since needed, three of which the existing documents already circle without naming:
 
 - A plugin has no way to run anything **beside the provisioner**, so a kind that must be reached from the
-  control plane rather than from the endpoint has nowhere to live. 0011 rejected out-of-process drivers
-  over go-plugin because they "bring gRPC into a service against the API style convention" — a rejection
-  about in-process transport, which never considered a separate process with its own lifecycle.
+  control plane rather than from the endpoint has nowhere to live. 0011 links its drivers into the
+  provisioner binary and rejected go-plugin drivers, child processes the provisioner would launch,
+  because they bring gRPC into the service against the API style convention. That rejection never
+  considered a separate process with its own lifecycle.
 - A plugin has no **provisioner-side half** to validate its kind at admission, interpret what its agent
   half reported, or act on it. 0011 asks "who publishes their schemas" and 0013 asks "how do their schemas
   reach the agent and 0011"; both are this gap seen from one end.
@@ -146,7 +147,8 @@ none:
   without a schema fails import with `schema_missing`.
 - Every schema in the bundle corresponds to a declared capability. A schema without a capability fails
   with `schema_unclaimed`, so a bundle cannot smuggle a definition for a kind the plugin was never
-  granted.
+  granted. Result schemas are exempt from this check: each belongs to the capability whose results it
+  describes.
 
 The bundle also carries the result schema that both ends validate against (see The result round trip), so
 a plugin with no running provisioner half still gets its results checked at the control plane.
@@ -406,10 +408,10 @@ each host-to-plugin call, so a proposal is traceable back to the report that pro
 
 | YAML | Variable | Default |
 |------|----------|---------|
-| `plugins.provisioner.enabled` | `RACKMARSHAL_PROVISIONER_PLUGINS_ENABLED` | `true` |
-| `plugins.provisioner.socketDir` | `RACKMARSHAL_PROVISIONER_PLUGINS_SOCKET_DIR` | `/run/rackmarshal-provisioner/plugins` |
-| `plugins.provisioner.startTimeout` | `RACKMARSHAL_PROVISIONER_PLUGINS_START_TIMEOUT` | `30s` |
-| `plugins.provisioner.callTimeout` | `RACKMARSHAL_PROVISIONER_PLUGINS_CALL_TIMEOUT` | `10s` |
+| `plugins.enabled` | `RACKMARSHAL_PROVISIONER_PLUGINS_ENABLED` | `true` |
+| `plugins.socketDir` | `RACKMARSHAL_PROVISIONER_PLUGINS_SOCKET_DIR` | `/run/rackmarshal-provisioner/plugins` |
+| `plugins.startTimeout` | `RACKMARSHAL_PROVISIONER_PLUGINS_START_TIMEOUT` | `30s` |
+| `plugins.callTimeout` | `RACKMARSHAL_PROVISIONER_PLUGINS_CALL_TIMEOUT` | `10s` |
 | `plugins.result.maxBytes` | `RACKMARSHAL_PROVISIONER_PLUGINS_RESULT_MAX_BYTES` | `16384` |
 | `plugins.policy.enabled` | `RACKMARSHAL_PROVISIONER_PLUGINS_POLICY_ENABLED` | `true` |
 
@@ -453,9 +455,10 @@ out at build time rather than at import.
   provisioner would sign a bundle containing a spec it cannot validate and a kind it cannot police, so a
   bad spec surfaces per endpoint after dispatch instead of once at admission. That is precisely the
   fail-closed-at-write-time property 0011 is built on, and plugin kinds are where it matters most.
-- **A provisioner service in-process over go-plugin** — what 0011 rejected. It brings gRPC into the service
-  and puts third-party code in the address space that holds the database credentials. A separate process
-  keeps the isolation and costs a socket.
+- **A provisioner service as a go-plugin child of the provisioner** — what 0011 rejected for drivers.
+  The service that holds the database credentials would launch and supervise third-party binaries
+  itself, so their lifecycle and failures would be its own. A separate process with its own lifecycle
+  keeps them apart and costs a socket.
 - **REST + JSON between the provisioner and its plugins**, to avoid amending the convention — consistent
   with service-to-service traffic, but a plugin author would then implement two wire protocols for one
   plugin, and the contract for the two halves would diverge over time. Widening the existing plugin

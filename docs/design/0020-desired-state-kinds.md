@@ -198,16 +198,19 @@ may only add denials (0012); it cannot permit something an earlier phase denied.
 
 Tengo source with declared inputs and limits.
 
-| Field           | Type              | Required | Default | Notes                                        |
-|-----------------|-------------------|----------|---------|----------------------------------------------|
-| `spec.phase`    | enum              | yes      |         | `render` or `host`                            |
-| `spec.source`   | string            | yes      |         | Tengo source                                  |
-| `spec.inputs`   | map[string]schema | no       | `{}`    | Declared inputs with types and defaults       |
-| `spec.maxAllocs`| int               | no       | 5000000 | Allocation cap for the run                    |
-| `spec.timeout`  | duration          | no       | `2s`    | Wall-clock limit                              |
+| Field            | Type              | Required | Default                  | Notes                                              |
+|------------------|-------------------|----------|--------------------------|----------------------------------------------------|
+| `spec.phase`     | enum              | yes      |                          | `render` or `host`                                 |
+| `spec.source`    | string            | yes      |                          | Tengo source                                       |
+| `spec.inputs`    | map[string]schema | no       | `{}`                     | Declared inputs with types and defaults            |
+| `spec.maxAllocs` | int               | no       | service ceiling (100000) | Allocation cap for the run; clamped to the ceiling |
+| `spec.timeout`   | duration          | no       | `2s`                     | Wall-clock limit                                   |
 
 A `render` script runs in the provisioner and produces content; a `host` script runs on the agent. Both
 run under the sandbox 0001 fixes: allowlisted pure standard-library modules, no `os`, no file access.
+`spec.maxAllocs` defaults to the provisioner's `script.maxAllocs` ceiling, 100,000 unless raised, and a
+larger value is clamped to that ceiling; hardened tiers fix the ceiling at its default
+([0011](0011-provisioner.md)).
 
 ### DeviceConnection
 
@@ -246,18 +249,19 @@ struct tag expresses them, and they are what the generated schemas cannot check 
 
 Kinds follow the same stages as APIs: `v1alpha1` → `v1beta1` → `v1`, with side-by-side versions and
 conversion in the provisioner (0011). Adding an optional field with a default is not breaking; changing a
-default, narrowing an enum, or making an optional field required is. `oasdiff` covers the generated
-OpenAPI components, and the generated JSON Schema files are compared the same way.
+default, narrowing an enum, or making an optional field required is. `oasdiff` compares the generated
+OpenAPI component schemas between versions.
 
 ### Testing
 
-- **Round trip** — every example decodes into the Go structures, re-encodes, and still validates.
-- **Generated artefact drift** — schemas, OpenAPI components, reference docs, and this document's field
+- **Round trip** — every example decodes into the Go structures, re-encodes, and still validates against
+  the kind's OpenAPI component schema.
+- **Generated artefact drift** — OpenAPI component schemas, reference docs, and this document's field
   tables are regenerated in CI and the build fails on any diff.
 - **Invariant tests** — one failing example per rule in [Invariants](#invariants-a-type-cannot-carry),
   asserting the expected error code and JSON pointer rather than just a failure.
-- **Wizard conformance** — the document the portal's guided flow produces validates against the generated
-  schema, which is the check that was missing when it was written.
+- **Wizard conformance** — the document the portal's guided flow produces validates against the kind's
+  OpenAPI component schema, which is the check that was missing when it was written.
 
 ## Alternatives considered
 
