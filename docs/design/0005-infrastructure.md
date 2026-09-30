@@ -66,13 +66,13 @@ tokens to containers and hosts, while pods enroll with projected service account
 
 #### Deployment targets
 
-| `target`     | Runtime                                 | Role                    | Consumes         | First enrollment     |
-|--------------|-----------------------------------------|-------------------------|------------------|----------------------|
-| `kubernetes` | Helm release in a dedicated namespace   | `forge_target_helm`     | chart and image  | projected SA token   |
-| `podman`     | Quadlet `.container` unit under systemd | `forge_target_quadlet`  | image            | single-use token     |
-| `docker`     | Compose project under systemd           | `forge_target_compose`  | image            | single-use token     |
-| `package`    | deb or rpm with its systemd unit        | `forge_target_packages` | deb / rpm        | single-use token     |
-| `windows`    | Windows service                         | `forge_target_windows`  | NSIS installer   | single-use token     |
+| `target`     | Runtime                                 | Role                          | Consumes        | First enrollment   |
+|--------------|-----------------------------------------|-------------------------------|-----------------|--------------------|
+| `kubernetes` | Helm release in a dedicated namespace   | `rackmarshal_target_helm`     | chart and image | projected SA token |
+| `podman`     | Quadlet `.container` unit under systemd | `rackmarshal_target_quadlet`  | image           | single-use token   |
+| `docker`     | Compose project under systemd           | `rackmarshal_target_compose`  | image           | single-use token   |
+| `package`    | deb or rpm with its systemd unit        | `rackmarshal_target_packages` | deb / rpm       | single-use token   |
+| `windows`    | Windows service                         | `rackmarshal_target_windows`  | NSIS installer  | single-use token   |
 
 `package` supports Enterprise Linux 9 and 10, Debian 12 and 13, and Ubuntu 24.04 and 26.04 LTS on amd64
 and arm64; `windows` supports Windows Server 2022 and 2025 ([endoflife.date](https://endoflife.date)).
@@ -86,11 +86,12 @@ infrastructure/
 ├── ansible.cfg  requirements.yml  execution-environment.yml
 ├── inventories/<env>/                # hosts.yaml; group_vars/all/ with the four files below
 ├── roles/
-│   ├── forge_service/                # target-neutral model: config, probes, secrets, enrollment
-│   ├── forge_target_helm/  forge_target_quadlet/  forge_target_compose/
-│   ├── forge_target_packages/  forge_target_windows/
-│   ├── forge_host/  forge_postgresql/  forge_otel_collector/  forge_control_node/
-│   └── forge_identity/  forge_gateway/  forge_sso/  forge_inventory/  forge_provisioner/
+│   ├── rackmarshal_service/          # target-neutral model: config, probes, secrets, enrollment
+│   ├── rackmarshal_target_helm/  rackmarshal_target_quadlet/  rackmarshal_target_compose/
+│   ├── rackmarshal_target_packages/  rackmarshal_target_windows/
+│   ├── rackmarshal_host/  rackmarshal_postgresql/  rackmarshal_otel_collector/
+│   ├── rackmarshal_control_node/  rackmarshal_identity/  rackmarshal_gateway/
+│   └── rackmarshal_sso/  rackmarshal_inventory/  rackmarshal_provisioner/
 ├── playbooks/                        # site, service, rotate-credentials, render
 ├── policy/                           # inventory, content, kubernetes, compose, quadlet, systemd, windows
 ├── molecule/  tests/kubernetes/      # host scenarios; kind and k3s scenarios
@@ -99,14 +100,14 @@ infrastructure/
 
 #### Environment and target selection
 
-`group_vars/all/` holds four files. `environment.yaml` is unchanged: `forge_environment` declares `name`,
-`tier`, `id` (26-character base32 from the ceremony), `caBundle` (public roots only; two during root
-rotation), and `overrides`. `secrets.yaml` holds secret-manager references only. `artifacts.yaml` is
+`group_vars/all/` holds four files. `environment.yaml` is unchanged: `rackmarshal_environment` declares
+`name`, `tier`, `id` (26-character base32 from the ceremony), `caBundle` (public roots only; two during
+root rotation), and `overrides`. `secrets.yaml` holds secret-manager references only. `artifacts.yaml` is
 described below, and `deployment.yaml` selects targets. Services may differ — for example
 `gateway` as a package on edge hosts and the rest in a cluster:
 
 ```yaml
-forge_deployment:
+rackmarshal_deployment:
   defaultTarget: kubernetes          # kubernetes | podman | docker | package | windows
   defaultReplicas: 2                 # every service is replica-safe; see CONVENTIONS
   services:
@@ -135,14 +136,14 @@ Loki or metrics query use the same two names.
 
 Every service ships logs, traces, and metrics over OTLP to `telemetry.endpoint`
 ([0004](0004-common.md)), so each environment needs one OTLP receiver reachable from every
-target. `forge_telemetry` renders that endpoint and its CA bundle into every service's configuration.
-An OpenTelemetry Collector is the expected deployment, with Loki behind it for logs; Loki's own
-`/otlp/v1/logs` endpoint is a valid target for a small environment that wants no collector. 0004 names
-which resource attributes may become Loki stream labels, and `service.instance.id` must not be one:
-`replicas` above makes the instance count a deployment choice, so as a label it would create a Loki
-stream per instance per restart.
+target. `rackmarshal_telemetry` renders that endpoint and its CA bundle into every service's
+configuration. An OpenTelemetry Collector is the expected deployment, with Loki behind it for logs;
+Loki's own `/otlp/v1/logs` endpoint is a valid target for a small environment that wants no collector.
+0004 names which resource attributes may become Loki stream labels, and `service.instance.id` must not
+be one: `replicas` above makes the instance count a deployment choice, so as a label it would create a
+Loki stream per instance per restart.
 
-`forge_identity` renders `clusters` into `identity`'s cluster issuer registry
+`rackmarshal_identity` renders `clusters` into `identity`'s cluster issuer registry
 ([0006](0006-identity.md)), mapping service account `<namespace>/rackmarshal-<name>` to
 `spiffe://<environment-id>/service/<name>`. The Kubernetes object keeps the prefix because it shares a
 namespace with whatever else is deployed there; the SPIFFE path does not, because the environment's
@@ -161,10 +162,10 @@ verified local file. A 100-series workflow proposes `artifacts.yaml` updates whe
 
 #### Rendering
 
-`forge_service` builds one model per instance: the YAML configuration with the CONVENTIONS `environment`
-block and `...File` references, the `/livez`, `/readyz`, and `/healthz` probes, secret files, and the
-enrollment credential path. `playbooks/render.yaml` runs with `connection: local` and placeholder
-secrets, so CI renders every inventory without credentials. Conftest reads:
+`rackmarshal_service` builds one model per instance: the YAML configuration with the CONVENTIONS
+`environment` block and `...File` references, the `/livez`, `/readyz`, and `/healthz` probes, secret
+files, and the enrollment credential path. `playbooks/render.yaml` runs with `connection: local` and
+placeholder secrets, so CI renders every inventory without credentials. Conftest reads:
 
 - `kubernetes` — `helm template` of the verified chart with the rendered values;
 - `podman` — the Quadlet unit model as JSON, because Conftest's INI parser keeps one value per key
@@ -192,7 +193,7 @@ Checked on 2026-09-15 from GitHub releases and the [Galaxy API](https://galaxy.a
 `kubernetes.core` 6.4.0 and 6.5.0 add Helm v4 support and map `atomic` to `--rollback-on-failure`
 ([changelog](https://github.com/ansible-collections/kubernetes.core/blob/main/CHANGELOG.rst)). Service
 repositories use [nFPM](https://github.com/goreleaser/nfpm/releases) v2.47.0 and
-[NSIS](https://nsis.sourcerackmarshal.io) v3. Collections and Helm are baked into the
+[NSIS](https://nsis.sourceforge.io) v3. Collections and Helm are baked into the
 execution environment image, pinned by digest; Dependabot does not cover Galaxy (unverified), so a
 100-series workflow proposes bumps.
 
@@ -357,7 +358,7 @@ ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OC
 
 ### Environment awareness
 
-- `forge_environment.tier` drives role defaults on every target: `production` and `staging` enable
+- `rackmarshal_environment.tier` drives role defaults on every target: `production` and `staging` enable
   TLS-only listeners, disable OpenAPI UIs, and require pinned artifacts; `development` may run all
   services on one host or one kind cluster.
 - Last-resort features enter `overrides` only through a pull request Conftest flags for `CODEOWNERS`.
@@ -372,8 +373,8 @@ OTLP/HTTP from services and forward to the environment's backend.
 
 ### Configuration
 
-Ansible variables use the `forge_` prefix in snake_case. Rendered service configuration uses CONVENTIONS
-YAML keys and `...File` references, identical on every target except file paths. There is no
+Ansible variables use the `rackmarshal_` prefix in snake_case. Rendered service configuration uses
+CONVENTIONS YAML keys and `...File` references, identical on every target except file paths. There is no
 `RACKMARSHAL_INFRASTRUCTURE_` prefix because nothing here is a Go executable.
 
 ### Build, release & versioning
@@ -395,7 +396,7 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
   ([runner images](https://github.com/actions/runner-images)), with idempotence, upgrade, and rollback
   (Molecule driver details unverified).
 - **Windows** — installer install, upgrade, downgrade, and service start on `windows-2025` and `windows-2022`
-  runners; `forge_target_windows` nightly against disposable Windows Server VMs over SSH.
+  runners; `rackmarshal_target_windows` nightly against disposable Windows Server VMs over SSH.
 - **End to end** — a disposable `development` inventory per target nightly, with a simulated ceremony
   using SoftHSM, cluster registration, and enrollment of every service.
 
@@ -454,7 +455,7 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
   [Compose secrets](https://docs.docker.com/compose/how-tos/use-secrets/),
   [Docker security](https://docs.docker.com/engine/security/),
   [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
-- [nFPM](https://nfpm.goreleaser.com), [NSIS](https://nsis.sourcerackmarshal.io) (zlib/libpng licensed),
+- [nFPM](https://nfpm.goreleaser.com), [NSIS](https://nsis.sourceforge.io) (zlib/libpng licensed),
   [`ansible.windows.win_package`](https://docs.ansible.com/ansible/latest/collections/ansible/windows/win_package_module.html),
   [runner images](https://github.com/actions/runner-images), [endoflife.date](https://endoflife.date).
 - [Go `crypto/x509` constraints](https://github.com/golang/go/blob/master/src/crypto/x509/constraints.go)

@@ -267,7 +267,7 @@ Token formats belong to [0006](0006-identity.md). For JWT access tokens
 - **Time** — `exp` is required, `nbf` and `iat` are honored, and clock skew is at most 60 seconds.
 - **Coarse authorization** — a `bearerAuth` security requirement lists the role names the operation
   needs, which OpenAPI 3.1 permits for non-OAuth schemes. The gateway requires at least one of them in
-  `roles`. Tenant- and resource-level checks stay in services.
+  `rackmarshal_roles`. Tenant- and resource-level checks stay in services.
 - **Opaque API tokens**, if 0006 chooses them, go to `identity` introspection
   ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)) over mutual TLS, with results cached for at most
   30 seconds.

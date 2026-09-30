@@ -318,7 +318,7 @@ visible in the metric, and the console sink is unaffected, so nothing is lost si
 - **TLS for telemetry.** A plaintext `http://` endpoint is a last-resort feature (`plaintext-telemetry`):
   refused in `production` without an override, and warned in `staging`.
 - **Bounded input.** Incoming `traceparent` values at public ingress start new traces, exporter
-  responses are size-capped, and zerolog JSON-escapes values, so field content cannot rackmarshal log lines.
+  responses are size-capped, and zerolog JSON-escapes values, so field content cannot forge log lines.
 
 ### Environment awareness
 

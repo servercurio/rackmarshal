@@ -126,7 +126,7 @@ Each surface is an OIDC relying party of `identity`, using the authorization cod
 
 | Property   | Value                                                                       |
 |------------|-----------------------------------------------------------------------------|
-| Cookie     | `__Host-forge_portal_session` / `__Host-forge_console_session`              |
+| Cookie     | `__Host-rackmarshal-portal-session` / `__Host-rackmarshal-console-session`  |
 | Attributes | `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, no `Domain`                 |
 | Contents   | An opaque 256-bit identifier; tokens stay in the server-side session store  |
 | Idle life  | 30 minutes (`production`), renewed on use                                   |
