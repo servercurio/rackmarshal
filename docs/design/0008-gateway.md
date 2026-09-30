@@ -48,8 +48,8 @@ limits, and principal propagation to this document ([0002](0002-api-schema.md)).
 
 ### Responsibilities
 
-- **Operator ingress** — TLS 1.2+, bearer tokens, `operator`-audience operations and the `/sso/` token
-  endpoints.
+- **Operator ingress** — TLS 1.2+, bearer tokens, `operator`-audience operations and the `/identity/`
+  protocol endpoints.
 - **Agent ingress** — TLS 1.3 with client certificates, `agent`-audience operations, one enrollment route.
 - **Routing** — exact operation matching built from `api-schema`; the first path segment selects
   the upstream service.
@@ -236,7 +236,7 @@ authoritative control for what it protects.
 | Bucket | Why per-replica is acceptable |
 |---|---|
 | Operator, before and after auth | Capacity protection, not a security boundary; size it as `total / replicas` |
-| `/sso/` token endpoints | `identity` enforces attempt counters centrally (0007) |
+| `/identity/oidc/` token endpoints | `identity` enforces attempt counters centrally (0007) |
 | Agent | The agent's certificate is revocable, and revocation is checked every request |
 | Agent enrollment | Enrollment tokens are single-use and redeem exactly once under concurrency (0006) |
 
@@ -268,9 +268,9 @@ Token formats belong to [0006](0006-identity.md). For JWT access tokens
 - **Coarse authorization** — a `bearerAuth` security requirement lists the role names the operation
   needs, which OpenAPI 3.1 permits for non-OAuth schemes. The gateway requires at least one of them in
   `rackmarshal_roles`. Tenant- and resource-level checks stay in services.
-- **Opaque API tokens**, if 0006 chooses them, go to `identity` introspection
-  ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)) over mutual TLS, with results cached for at most
-  30 seconds.
+- **Opaque API tokens** are exchanged with `identity`'s `token-exchanges` operation over mutual TLS
+  for a signed, environment-bound access JWT ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)
+  semantics, 0006), which is then verified as above; the result is cached for at most 30 seconds.
 
 #### Agent ingress and revocation
 
@@ -294,13 +294,13 @@ Token formats belong to [0006](0006-identity.md). For JWT access tokens
 
 Echo's `RateLimiter` middleware with its memory store (`golang.org/x/time/rate`), keyed per ingress:
 
-| Bucket                       | Key                   | Proposed default          |
-|------------------------------|-----------------------|---------------------------|
-| Operator, before auth        | client IP             | 20 req/s, burst 40        |
-| Operator, after auth         | principal `id`        | 10 req/s, burst 20        |
-| `/sso/` token endpoints      | client IP             | 1 req/s, burst 5          |
-| Agent                        | agent ID              | 1 req/s, burst 10         |
-| Agent enrollment             | client IP             | 10 per minute, burst 5    |
+| Bucket                            | Key            | Proposed default       |
+|-----------------------------------|----------------|------------------------|
+| Operator, before auth             | client IP      | 20 req/s, burst 40     |
+| Operator, after auth              | principal `id` | 10 req/s, burst 20     |
+| `/identity/oidc/` token endpoints | client IP      | 1 req/s, burst 5       |
+| Agent                             | agent ID       | 1 req/s, burst 10      |
+| Agent enrollment                | client IP      | 10 per minute, burst 5 |
 
 The starter's `netutil.LimitListener` caps connections per listener before the TLS handshake. Client IPs
 come from the starter's proxy extractor with `useDirectIP` by default. The starter's `X-Forwarded-For`
@@ -475,7 +475,7 @@ omitted here.
   — role names for non-OAuth schemes.
 - [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068) (JWT access tokens),
   [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725) (JWT best practices),
-  [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662) (token introspection),
+  [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) (token exchange),
   [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) (bearer tokens, `WWW-Authenticate`).
 - [RFC 5280](https://www.rfc-editor.org/rfc/rfc5280) and [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960)
   — CRLs and OCSP.

@@ -91,7 +91,9 @@ PKI: `/identity/pki/<environment-id>/ca.pem`, `/crl.der`, and `/ocsp` (RFC 6960 
 in each certificate's AIA and CRL distribution point extensions.
 
 No implicit or password grants, following the OAuth 2.0 security BCP
-([RFC 9700](https://www.rfc-editor.org/rfc/rfc9700)). Redirect URIs match exactly.
+([RFC 9700](https://www.rfc-editor.org/rfc/rfc9700)). Redirect URIs match exactly, except that the `cli`
+client's loopback redirect URIs match any port on `127.0.0.1`
+([RFC 8252 §7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)).
 
 #### REST API sketch (generated to `gen/openapi/identity/v1alpha1/openapi.yaml`)
 
@@ -117,7 +119,7 @@ No implicit or password grants, following the OAuth 2.0 security BCP
 | `POST /identity/v1alpha1/password-verifications`, `/webauthn-assertions` | internal | mTLS, `sso` only |
 | `POST /identity/v1alpha1/federated-logins`                    | internal   | mTLS, `sso` only |
 | `POST /identity/v1alpha1/device-approvals`                    | internal   | mTLS, `sso` only |
-| `POST /identity/v1alpha1/token-introspections`                | internal   | mTLS, `gateway` only |
+| `POST /identity/v1alpha1/token-exchanges`                     | internal   | mTLS, `gateway` only |
 
 User codes, tokens, and passwords travel only in request bodies marked `x-rackmarshal-sensitive`, never in
 paths (CONVENTIONS). Tenancy comes from the token's principal, not the path (0002's proposal).
@@ -139,9 +141,9 @@ revocation cache window rather than at certificate expiry.
 - **Refresh tokens** — opaque, 256 random bits, stored as SHA-256, rotated on every use with reuse
   detection that revokes the family. Idle 8 hours, absolute 7 days (proposed).
 - **API tokens** — `rackmarshal_pat_<environment-id>_<secret>`, stored as SHA-256 (256-bit secrets need
-  no slow hash). The gateway exchanges one for a signed access token through `token-introspections`
-  (RFC 8693 semantics) and caches the result for at most its 5-minute lifetime, so every bearer token a
-  service sees is a signed, environment-bound JWT. Maximum lifetime 365 days, default 90.
+  no slow hash). The gateway exchanges one for a signed access token through `token-exchanges`
+  (RFC 8693 semantics) and caches the result for at most 30 seconds, so every bearer token a service
+  sees is a signed, environment-bound JWT. Maximum lifetime 365 days, default 90.
 - **SAML assertions** — signed with a per-environment key; the audience restriction and issuer carry
   the environment ID.
 - **Signing key rotation** — every 30 days; JWKS publishes current, next, and previous keys.
@@ -193,7 +195,7 @@ clusters:
       file: /etc/rackmarshal-identity/clusters/east-1.jwks.json
       # discovery: { caFile: /etc/rackmarshal-identity/clusters/east-1-ca.pem, refresh: 1h }
     serviceAccounts:
-      - { namespace: rackmarshal-qa-east, name: inventory, service: inventory }
+      - { namespace: rackmarshal-qa-east, name: rackmarshal-inventory, service: inventory }
 ```
 
 **Verification** — offline; `identity` never calls a cluster's API server:
@@ -360,7 +362,9 @@ otherwise be assumed, per
   `previous`, and inserts a fresh `next`. A second replica rotating concurrently violates the index and
   rolls back having done nothing, so two `current` keys cannot be published whether or not either
   replica took a lock.
-- **CRL.** Every revocation increments a `crl_generation` counter. A replica serving `/crl.der` reads
+- **CRL.** Every revocation increments a `crl_generation` counter, and so does each 12-hour scheduled
+  regeneration, through a compare-and-set on the value last read so that one replica wins per interval
+  and an unchanged revocation list still gets a fresh `thisUpdate`. A replica serving `/crl.der` reads
   the signed DER for the current generation from `crl_cache`; on a miss it generates, signs, and
   `INSERT … ON CONFLICT DO NOTHING`, then reads back whichever row won. Replicas therefore serve
   byte-identical CRLs. That matters because agents cache by `nextUpdate`: replicas signing their own
@@ -376,13 +380,13 @@ from a different replica validates it the same way.
 - **Key backends** — `pkcs11` (preferred, every platform), `aws-kms` (pure Go), or `kek-sealed`.
   `kek-sealed` stores AES-256-GCM
   ciphertext with the key ID as associated data, and loads the KEK only from `kekFile` into memory.
-  It calls `AllowLastResort("kek-sealed-ca-store")` for the CA key and
-  `AllowLastResort("kek-sealed-signing-keys")` for token keys, so both are refused in `production`
-  without an override.
+  Its last-resort features are `kek-sealed-ca-store` (CA key) and `kek-sealed-signing-keys` (token keys).
+  `production` refuses both with no override, even when named in `overrides`, so its keys always live
+  in an HSM or KMS; `staging` and lower may use them, and startup logs each at `warn`.
 - **CA constraints** — the intermediate has path length 0 and a URI name constraint for the trust
   domain (0005), so even a misissued leaf cannot name another environment.
 - **Caller pinning** — internal operations check the caller's SPIFFE ID: `sso` for login
-  operations, `gateway` for introspection, `control-node/*` for service enrollment tokens and
+  operations, `gateway` for token exchange, `control-node/*` for service enrollment tokens and
   cluster issuers.
 - **Brute force** — failed password, WebAuthn, and user-code attempts are counted per account and per
   source in PostgreSQL, with exponential delays rather than hard lockouts that attackers could abuse.
@@ -395,8 +399,8 @@ from a different replica validates it the same way.
 
 - `environment.id` and `caBundle` are required (CONVENTIONS); startup fails if the intermediate does
   not chain to the bundle or does not carry the environment's trust domain.
-- `Hardened()` tiers disable the OpenAPI UI, require WebAuthn for platform administrators, and refuse
-  the `kek-sealed` backends without an override.
+- `Hardened()` tiers disable the OpenAPI UI and require WebAuthn for platform administrators;
+  `production` refuses the `kek-sealed` backends outright (see Security).
 - `development` may use SoftHSM through the same `pkcs11` backend.
 
 ### Logging & telemetry
@@ -469,8 +473,8 @@ than one service.
   and expired tokens fail. Service account tokens from kind and synthetic issuers fail with a wrong
   issuer, audience, algorithm, or key, an age over `maxTokenAge`, an unmapped or other service's
   account, a retired cluster, or a replay with a different CSR key.
-- **Data** — migrations up and down on PostgreSQL in CI; a test asserts every tenant-scoped query
-  filters by `tenant_id`.
+- **Data** — forward-only migrations applied on PostgreSQL in CI ([0005](0005-infrastructure.md)); a
+  test asserts every tenant-scoped query filters by `tenant_id`.
 
 ## Alternatives considered
 
@@ -516,9 +520,9 @@ than one service.
   [0005](0005-infrastructure.md), [0007](0007-sso.md), [CONVENTIONS.md](CONVENTIONS.md).
 - [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636),
   [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009), [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517),
-  [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414), [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628),
-  [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693), [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068),
-  [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700).
+  [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252), [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414),
+  [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628), [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693),
+  [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700).
 - [OpenID Connect Core](https://openid.net/specs/openid-connect-core-1_0.html) and
   [Discovery](https://openid.net/specs/openid-connect-discovery-1_0.html);
   [SAML 2.0](https://docs.oasis-open.org/security/saml/v2.0/).

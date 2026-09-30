@@ -10,7 +10,7 @@
 - **Summary:** `common` gives every Rackmarshal Go executable the same logging, environment handling, and
   telemetry. It provides a zerolog wrapper with trace correlation and service and environment fields, an
   `environment` package for the four tiers, and OpenTelemetry setup whose Rackmarshal-built OTLP/HTTP exporter
-  sends traces and metrics without linking gRPC.
+  sends traces, metrics, and logs without linking gRPC.
 
 > An initial draft with concrete proposals, bounded by the
 > [Resolved decisions](0001-project-repositories.md#resolved-decisions) in 0001. Conventions other
@@ -39,13 +39,13 @@ The starters' logging differs by template:
 
 - Replace the starters' logging with minimal call-site changes.
 - Tag every log event and telemetry resource with the service and its environment.
-- Export traces and metrics over OTLP/HTTP without gRPC, from a measured dependency set enforced in CI.
+- Export traces, metrics, and logs over OTLP/HTTP without gRPC, from a measured dependency set enforced
+  in CI.
 - Implement tier parsing, validation, hardened defaults, and last-resort gating once.
 
 **Non-goals**
 
 - Config file loading and web-framework middleware, which stay in the starters (0001).
-- Exporting logs over OTLP; logs stay on stdout (see Open questions).
 - Certificates, SPIFFE IDs, and TLS configuration — [0003](0003-sdk.md).
 - Collector deployment and telemetry backends — [0005](0005-infrastructure.md).
 
@@ -128,7 +128,8 @@ func (c *Config) AllowLastResort(feature string, log *zerolog.Logger) error
 - **Last-resort gate** — `AllowLastResort` returns an error in `production` unless `feature` is in
   `Overrides`. Every use in `production` is logged at `warn`, and at `info` in other tiers, with
   `rackmarshal.override.feature`. Feature names are kebab-case and owned by their documents, such as
-  `kek-sealed-ca-store` in [0006](0006-identity.md).
+  `plaintext-telemetry` here. `kek-sealed-ca-store` and `kek-sealed-signing-keys`
+  ([0006](0006-identity.md)) are refused in `production` even when listed in `Overrides`.
 
 #### `logging`
 
@@ -288,8 +289,7 @@ one, which is the only entry an operator has to think about.
 
   The log signal adds exactly those two modules: every other requirement of `otel/sdk/log` v0.22.0 was
   already linked, and the slim proto module already carried `collector/logs/v1`. `go list -m all`
-  reports 34 modules and no gRPC. 0001 estimates "about 8" for the exporter on an
-  unverified counting basis, so this measured list, not the estimate, seeds `deps.allow`.
+  reports 34 modules and no gRPC. This measured list seeds `deps.allow`.
 - **Versions** — v1.46.0 is the latest stable OpenTelemetry Go release (v1.47.0-rc.1 exists), pinned
   exactly. The log API and SDK are v0.22.0 and **not yet 1.0**, so they carry no compatibility guarantee
   and may break on a minor bump; they are pinned exactly and upgraded deliberately. That is the real
@@ -305,10 +305,10 @@ None beyond in-memory export batches. The span processor's queue is bounded and 
 
 The log processor's queue is bounded the same way, and the rule it enforces is that **a log call never
 blocks on a network**. On overflow the batch processor drops the oldest records and increments
-`rackmarshal.logs.dropped` by reason (`queue_full`, `export_failed`); it does not apply backpressure to the
-caller. A logging statement sits inside request handling, so the alternative — blocking until a
-collector acknowledges — would convert a telemetry outage into a service outage. Dropped logs are
-visible in the metric, and the console sink is unaffected, so nothing is lost silently.
+`rackmarshal.common.logs.dropped` by reason (`queue_full`, `export_failed`); it does not apply
+backpressure to the caller. A logging statement sits inside request handling, so the alternative —
+blocking until a collector acknowledges — would convert a telemetry outage into a service outage.
+Dropped logs are visible in the metric, and the console sink is unaffected, so nothing is lost silently.
 
 ### Security
 

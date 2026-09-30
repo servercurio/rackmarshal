@@ -24,8 +24,8 @@ In 0001, plugins are separate processes that `agent` launches over gRPC with
 `hashicorp/go-plugin`. `provisioner` verifies plugin release signatures at import, the core
 `sigstore` validator plugin verifies them again on the host before install, and before every launch the
 agent pins the binary's SHA-256, taken from its signed directive bundle or a core plugin's signed
-statement, through `SecureConfig`. The agent passes its environment ID, and a plugin refuses an agent
-from another environment
+statement, through `SecureConfig`. The agent passes its environment (name, tier, and ID) in `Init`,
+and a plugin carries no environment configuration of its own
 ([Agent plugin ecosystem](0001-project-repositories.md#agent-plugin-ecosystem),
 [Environment identity](0001-project-repositories.md#environment-identity)). This repository is "the
 stable contract plugins build against", and [CONVENTIONS.md](CONVENTIONS.md) makes it the only home of
@@ -76,7 +76,7 @@ agent-plugin-sdk/
 │   ├── manifest/                        # Manifest, Capability, Privileges, NetworkGrant, Policy
 │   ├── bundle/                          # build, read, and verify a provisioner bundle (0021)
 │   ├── serve/                           # Main, Options, FactsCollector, ResourceHandler, Granted
-│   ├── host/                            # Launch, Config, Plugin, ErrEnvironmentMismatch
+│   ├── host/                            # Launch, Config, Plugin
 │   ├── tracecontext/                    # Carrier, UnaryClient, UnaryServer
 │   └── plugintest/                      # InProcess, Launch, Conformance
 └── Taskfile.yaml
@@ -259,8 +259,10 @@ are separate capabilities so a plugin that only reads results cannot propose sta
    granted a `verifier:*` capability.
 4. **Gate** — `Init` carries the grant. `serve` rejects RPCs outside it with `PERMISSION_DENIED`
    (`capability_not_granted`), and `serve.Granted(ctx)` exposes the privilege grant to handlers.
-5. **Enforce** — in-plugin checks are defense in depth. The boundary is the OS sandbox the agent builds
-   from the grant (dedicated user, no network, path limits) through go-plugin's `RunnerFunc` (0012).
+5. **Enforce** — in-plugin checks are defense in depth. The agent applies the grant from outside the
+   plugin (0012): a dedicated user and cgroup limits set through `SysProcAttr`, egress only through its
+   loopback proxy, and the executor's network lockdown. That is least privilege, not a sandbox against
+   hostile code; the trust basis stays the signed plugin.
 
 #### Network grants
 
@@ -297,11 +299,9 @@ privileges:
 2. **Gate** — until `Init` succeeds, every RPC except `GetManifest` and `Check` returns
    `FAILED_PRECONDITION` (`not_initialized`). `Init` is accepted once.
 3. **Record** — `Init` records the environment for logging and for `serve.Environment(ctx)`. A plugin
-   that is separately configured with an environment (optional, and unusual) compares and returns
-   `PERMISSION_DENIED` (`environment_mismatch`), logging both IDs and exiting with code 78; `host`
-   returns `ErrEnvironmentMismatch` so the agent does not restart it in a loop.
+   has no environment configuration to compare it against.
 4. **One source** — the agent's values come from enrollment and are authoritative. `host.Launch`
-   refuses `Env` entries that set `<PREFIX>_ENVIRONMENT_*`, so the two paths cannot disagree. The
+   refuses `Env` entries that set `<PREFIX>_ENVIRONMENT_*`, so there is no second path to disagree. The
    agent already controls the plugin binary, its arguments, and its environment, so a plugin-side copy
    would add no boundary.
 
@@ -318,7 +318,7 @@ func main() {
     os.Exit(serve.Main(serve.Options{
         Manifest:  manifestYAML,     // //go:embed manifest.yaml
         Version:   version.Number(),
-        Configure: loadConfig,       // defaults → file → RACKMARSHAL_PLUGIN_<NAME>_* → *environment.Config
+        Configure: loadConfig,       // defaults → file → RACKMARSHAL_PLUGIN_<NAME>_*; no environment
         Logger:    initLogging,      // receives the original stderr (see Logging & telemetry)
         Facts:     example.Facts{},  // FactsCollector: CollectFacts(ctx) ([]serve.Fact, error)
         Resources: map[string]serve.ResourceHandler{"plugins.example.com/v1alpha1/Marker": marker},
@@ -360,7 +360,7 @@ declares `core: true` and `verifier:sigstore`; otherwise it returns `ErrNotCoreV
 | `SkipHostEnv`      | `true`                            | agent credentials and proxies not inherited    |
 | `UnixSocketConfig` | agent-owned `0700` directory      | socket unreachable by other users              |
 | `Logger`           | `hclog.NewNullLogger()`           | the SDK does not log; lines go to `Stderr`     |
-| `RunnerFunc`       | optional, from the caller         | sandboxing belongs to 0012                     |
+| `RunnerFunc`       | optional, from the caller         | isolation is 0012's, through `SysProcAttr`     |
 
 `host` requires an absolute path to a regular file. On Unix, the file and its parent directories must
 not be writable by group or others.
@@ -426,8 +426,8 @@ None; only in-memory grant and environment state per plugin process.
 
 ### Environment awareness
 
-Plugins require name, tier, and ID at startup and refuse agents from another environment (0001). Tier
-behavior goes through `common`'s `Hardened()` and `AllowLastResort`. `host.Launch` has no insecure
+Plugins carry no environment configuration: name, tier, and ID arrive from the agent in `Init` (0001).
+Tier behavior goes through `common`'s `Hardened()` and `AllowLastResort`. `host.Launch` has no insecure
 mode, and only `plugintest` uses `development` fixtures.
 
 ### Logging & telemetry
@@ -439,8 +439,9 @@ mode, and only `plugintest` uses `development` fixtures.
 - **Re-emitted by the agent** — the agent parses each JSON line, adds `rackmarshal.plugin.name` and
   `rackmarshal.plugin.version`, rate-limits, and writes to its stdout. Non-JSON lines, such as panics, become
   `warn` events.
-- **Fields and telemetry** — `service.name` is `rackmarshal-plugin-<name>`. Plugins export no telemetry in
-  `v1alpha1`; the agent records `rackmarshal.agent.plugin.rpc.duration` (0012).
+- **Fields and telemetry** — `service.name` is `plugin-<name>` and `service.namespace` is `rackmarshal`.
+  Plugins export no telemetry in `v1alpha1`; the agent records `rackmarshal.agent.plugin.rpc.duration`
+  (0012).
 
 ### Configuration
 
@@ -470,9 +471,9 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
   package.
 - **`plugintest.Launch`** — a fake agent: it pins the binary's hash, enables mutual TLS and a clean
   environment, sends a `development` environment, and forwards stderr to `t.Log`.
-- **`plugintest.Conformance`** — a valid manifest with handlers; refusal before `Init`, on environment
-  mismatch (with exit), for ungranted capabilities, and for RPCs outside the granted mode; panics as
-  `INTERNAL`; JSON log lines; and no changes from `Plan` after `Apply` for author-supplied samples.
+- **`plugintest.Conformance`** — a valid manifest with handlers; refusal before `Init`, for ungranted
+  capabilities, and for RPCs outside the granted mode; panics as `INTERNAL`; JSON log lines; and no
+  changes from `Plan` after `Apply` for author-supplied samples.
 - **SDK tests** — negotiation (host `{1,2}` against plugin `{1}`), a checksum mismatch, the
   writable-path refusal, `core: true` or `verifier:sigstore` without `Config.Core` refused, network grant
   validation, fuzzers, `-race`, and the allowlist.
@@ -483,11 +484,9 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
 - **`protoc`** — a C++ binary that `go run` cannot install, with no lint or breaking checks.
 - **Buf Schema Registry remote plugins** — need network access and an account to generate.
 - **In-process WebAssembly plugins** — strong sandboxing, but contradicts 0001's separate processes.
-- **Plugin configuration sent in `Init`** — the environment would then come from the agent being
-  checked.
 - **Certificate-backed environment proof** — the agent's X.509-SVID signs a nonce from the plugin. It
-  is stronger, but the parent process already controls the binary and its environment, so the main
-  risk is misconfiguration, which an ID comparison catches. Revisit if plugins hold environment secrets.
+  is stronger, but the parent process already controls the binary and its environment, and the plugin
+  has no environment of its own to prove it against. Revisit if plugins hold environment secrets.
 - **Signature verification in `host`** — `sigstore-go` would add 71 linked modules for every plugin
   author and the agent; verification runs at import (0011) and in the core validator's own process
   instead.

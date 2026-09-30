@@ -59,7 +59,7 @@ plugin-starter/
 ├── cmd/rackmarshal-plugin-example/main.go     # serve.Main wiring only
 ├── internal/
 │   ├── example/                         # facts.go (example.greeting), marker.go (Marker kind)
-│   ├── config/                          # Config{Environment, Logging, StateDir, Greeting}
+│   ├── config/                          # Config{Logging, StateDir, Greeting}
 │   ├── cli/                             # cobra: serve (default), version, manifest, check-config
 │   └── env/  version/                   # kept from go-cli-starter
 ├── manifest.yaml                        # embedded; least privilege
@@ -110,12 +110,11 @@ Removed from `go-cli-starter`:
 The starter's loading order: defaults → YAML file → `RACKMARSHAL_PLUGIN_<NAME>_*` → flags. The environment
 (name, tier, ID) is not configured here: the agent supplies it in `Init` (0013).
 
-| YAML                                 | Variable                                    | Default                         |
-|--------------------------------------|---------------------------------------------|---------------------------------|
-| `environment.name` / `.tier` / `.id` | `RACKMARSHAL_PLUGIN_EXAMPLE_ENVIRONMENT_NAME` / … | none — required (0013)          |
-| `logging.default.level`              | `RACKMARSHAL_PLUGIN_EXAMPLE_LOG_LEVEL`            | `info`                          |
-| `stateDir`                           | `RACKMARSHAL_PLUGIN_EXAMPLE_STATE_DIR`            | `/var/lib/rackmarshal-plugin-example` |
-| `greeting`                           | `RACKMARSHAL_PLUGIN_EXAMPLE_GREETING`             | `hello`                         |
+| YAML                    | Variable                               | Default                               |
+|-------------------------|----------------------------------------|---------------------------------------|
+| `logging.default.level` | `RACKMARSHAL_PLUGIN_EXAMPLE_LOG_LEVEL` | `info`                                |
+| `stateDir`              | `RACKMARSHAL_PLUGIN_EXAMPLE_STATE_DIR` | `/var/lib/rackmarshal-plugin-example` |
+| `greeting`              | `RACKMARSHAL_PLUGIN_EXAMPLE_GREETING`  | `hello`                               |
 
 `environment`, `rpc`, and `logging` are reserved child keys. Authors add their own keys beside them.
 
@@ -131,9 +130,9 @@ go run ./tools/fakeagent -plugin bin/rackmarshal-plugin-example-linux-amd64 \
 ```
 
 `fakeagent` hashes and launches the binary the way `host.Launch` does. It sends the `development`
-environment from `testdata/environment.yaml` and prints plans, results, and log lines. `-env-id`
-exercises the mismatch refusal, and it validates every `result_json` against the bundle's result schema
-so an author sees the same rejection the agent would produce.
+environment from `testdata/environment.yaml` in `Init` and prints plans, results, and log lines. It
+validates every `result_json` against the bundle's result schema so an author sees the same rejection
+the agent would produce.
 
 `fakeprovisioner` is the bundle's counterpart: it loads `provisioner/`, compiles the policy, and runs the
 admission and dispatch phases over a document, so an author can see a scoped `deny` fire without standing
@@ -143,17 +142,17 @@ third party finds out at build time rather than at import ([0021](0021-plugin-ex
 
 #### CI workflows
 
-| File                                      | Trigger      | Purpose                                                   |
-|-------------------------------------------|--------------|-----------------------------------------------------------|
-| `200-flow-pull-request-checks.yaml`       | pull request | compile, tests, vulncheck, conformance, rename smoke test |
-| `200-flow-pull-request-formatting.yaml`   | pull request | Conventional Commit titles                                |
-| `200-flow-codeql-scanning.yaml`           | pull request | CodeQL                                                    |
-| `300-flow-main-branch-checks.yaml`        | push to main | same checks as 200                                        |
-| `100-user-deploy-release-artifact.yaml`   | dispatch     | calls the 800 release workflow; dry-run input             |
-| `800-call-semantic-release.yaml`          | call         | build, hash, sign, SBOM, index, verify, attest, publish   |
-| `800-call-plugin-conformance.yaml`        | call         | build all platforms; conformance on linux/amd64; bundle completeness |
-| `800-call-{code-compiles,unit-test,vulncheck}.yaml` | call | unchanged from `go-cli-starter`                       |
-| `900-cron-starter-upstream-sync.yaml`     | weekly       | upstream sync pull request or issue                       |
+| File                                                | Trigger      | Purpose                                                              |
+|-----------------------------------------------------|--------------|----------------------------------------------------------------------|
+| `200-flow-pull-request-checks.yaml`                 | pull request | compile, tests, vulncheck, conformance, rename smoke test            |
+| `200-flow-pull-request-formatting.yaml`             | pull request | Conventional Commit titles                                           |
+| `200-flow-codeql-scanning.yaml`                     | pull request | CodeQL                                                               |
+| `300-flow-main-branch-checks.yaml`                  | push to main | same checks as 200                                                   |
+| `100-user-deploy-release-artifact.yaml`             | dispatch     | calls the 800 release workflow; dry-run input                        |
+| `800-call-semantic-release.yaml`                    | call         | build, bundle, hash, sign, SBOM, index, verify, attest, publish      |
+| `800-call-plugin-conformance.yaml`                  | call         | build all platforms; conformance on linux/amd64; bundle completeness |
+| `800-call-{code-compiles,unit-test,vulncheck}.yaml` | call         | unchanged from `go-cli-starter`                                      |
+| `900-cron-starter-upstream-sync.yaml`               | weekly       | upstream sync pull request or issue                                  |
 
 The workflows keep the starter's SHA-pinned actions, `harden-runner`, and a default of
 `permissions: contents: read`. `id-token: write` is granted only to the release job, and nothing uses
@@ -217,14 +216,14 @@ spec:
 
 ### Environment awareness
 
-The example refuses to start without `environment` configuration and refuses an agent from another
-environment (0013). The docs require plugins to branch on tier through `common`, never on the
-environment name. Tests cover both refusals.
+The example carries no environment configuration: name, tier, and ID arrive from the agent in `Init`,
+and every other RPC is refused until then (0013). The docs require plugins to branch on tier through
+`common`, never on the environment name. Tests cover the refusal before `Init`.
 
 ### Logging & telemetry
 
-`common` logging to stderr with `service.name` `rackmarshal-plugin-<name>`, as in 0013. No telemetry
-export. The docs list the fields the agent adds.
+`common` logging to stderr with `service.name` `plugin-<name>` and `service.namespace` `rackmarshal`,
+as in 0013. No telemetry export. The docs list the fields the agent adds.
 
 ### Configuration
 
@@ -236,10 +235,12 @@ See Interfaces.
 
 - **Build** — the platforms in `manifest.yaml`: `linux/amd64` and `linux/arm64` by default; darwin and
   windows are opt-in. `CGO_ENABLED=0` and `-trimpath`.
-- **`publishCmd`** — `task build && task hash && task sign && task sbom && task index && task verify`,
+- **`publishCmd`** —
+  `task build && task bundle && task hash && task sign && task sbom && task index && task verify`,
   producing 0014's assets: `<asset>`, `.sha256`, `.sigstore.json`, `.cdx.json` with its bundle,
-  `rackmarshal-plugin-<name>.manifest.yaml`, and `plugins-index.json`, each signed. There is no `coresign`
-  step and no `.core.dsse.json`.
+  `rackmarshal-plugin-<name>.manifest.yaml`, the required `rackmarshal-plugin-<name>.provisioner.tar.zst`
+  provisioner bundle, and `plugins-index.json`, each signed. There is no `coresign` step and no
+  `.core.dsse.json`.
 - **Verification and attestations** — `task verify` checks every bundle against the repository's own
   identity before publishing, requiring a transparency-log entry as the host validator does. The
   starter's `attest-build-provenance` and `attest-sbom` steps stay.
@@ -268,7 +269,7 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
   - `diverged` changes become an issue for manual review;
   - `removed` paths are ignored.
 - **Downstream plugins** — repositories created from a GitHub template start without its history (not
-  re-verified). They use the same mechanism pointed at `servercurio/plugin-starter` release tags.
+  re-verified). They use the same mechanism pointed at `rackmarshal/plugin-starter` release tags.
   `docs/upgrading.md` covers Dependabot SDK bumps and protocol changes.
 
 #### Licensing guidance for third parties
@@ -312,8 +313,6 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
   and would put the core-plugin key behind code Rackmarshal does not own.
 - **A permissive, no-attribution license (e.g. 0BSD) for the template** — removes notice obligations,
   but deviates from 0001's Apache-2.0 shared meta.
-- **Deviation from [CONVENTIONS.md](CONVENTIONS.md)** (*Go modules and layout*) — the binary is
-  `rackmarshal-plugin-<name>`, not the repository name, matching 0014.
 
 ## Open questions
 
