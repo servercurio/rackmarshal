@@ -51,7 +51,8 @@ change, and approving it — are exactly the ones that benefit from a rendered p
   and author a new `DirectiveSet` through a guided flow.
 - Run and display plans, and apply them after explicit confirmation.
 - Show reconciliation and enforcement history, including failures with the reason.
-- Let tenant administrators create, list, and revoke enrollment tokens and API tokens for their tenant.
+- Let tenant administrators create, list, and revoke enrollment tokens and API tokens for their tenant;
+  creating an enrollment token requires step-up.
 - Nothing else. Every write is a call the gateway already exposes to the `operator` audience.
 
 ### Interfaces
@@ -70,7 +71,7 @@ change, and approving it — are exactly the ones that benefit from a rendered p
 | `/directives/{id}/plan`     | Dry run: affected endpoints and diff                            | member     |
 | `/reconciliations`          | Queue and history, with per-endpoint outcome                    | member     |
 | `/agents`                   | Agents in this tenant, certificate expiry, last report          | admin      |
-| `/agents/enrollment-tokens` | Create, list, revoke                                            | admin      |
+| `/agents/enrollment-tokens` | Create (step-up), list, revoke                                  | admin      |
 | `/access/api-tokens`        | The signed-in user's tokens                                     | member     |
 | `/access/members`           | Tenant members and role assignment                              | admin      |
 | `/settings`                 | Theme, density, timezone, notification preferences              | member     |
@@ -146,8 +147,14 @@ written to disk.
 - **No secrets rendered** — `credentialRef` values resolve at apply time in the provisioner (0011) and
   are never fetched by the portal. Any property marked `x-rackmarshal-sensitive` renders as a reference, never
   a value, and the rendered-state view uses the gateway's redacted representation.
-- **CSRF, CSP, session, and step-up** — as 0016 specifies. The portal requires no step-up beyond its own
-  destructive confirmations; the operations that create trust live in the console.
+- **Enrollment tokens** — a tenant administrator issues agent enrollment tokens here without a platform
+  administrator, but only after the same step-up the console requires (0016): a fresh authentication
+  within the last five minutes, which `identity` enforces from the access token's `auth_time` whatever
+  the client, in every tier. The token is bound to the caller's tenant, taken from the session principal
+  and never from the request, and keeps 0006's agent-token lifetime (default 1 hour, maximum 24 hours).
+- **CSRF, CSP, session, and step-up** — as 0016 specifies. Beyond enrollment-token issuance, the portal
+  relies on its destructive confirmations; the remaining operations that create trust — service
+  enrollment approvals and CA and signing-key operations — live in the console.
 
 ### Environment awareness
 
@@ -190,8 +197,8 @@ image, Helm chart, deb/rpm, NSIS installer. No cgo, so it cross-compiles normall
 ## Alternatives considered
 
 - **Folding the portal into `console` with RBAC** — cheaper, and rejected in 0016 for blast radius.
-  Worth restating here: the console issues enrollment tokens and approves service enrollments, and those
-  controls should not share a process with the tenant-facing application.
+  Worth restating here: the console issues enrollment tokens for any tenant and approves service
+  enrollments, and those controls should not share a process with the tenant-facing application.
 - **Leaving authoring out entirely** — the position this document originally took: directive sets belong
   in version control, where review and history already work, so the portal would only read and plan them.
   Reversed, because it confused two things. Where a document *lives* is version control either way; what
@@ -219,8 +226,6 @@ image, Helm chart, deb/rpm, NSIS installer. No cgo, so it cross-compiles normall
   service owns delivery?
 - **Fact search scale** — an endpoint can report thousands of facts. Is client-side filtering adequate,
   or does `inventory` need a fact query parameter?
-- **Tenant administrator enrollment tokens** — 0006 marks enrollment token creation `operator` audience.
-  Does a tenant administrator hold that, or does the console own all issuance?
 
 ## References
 

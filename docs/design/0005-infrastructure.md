@@ -115,6 +115,7 @@ rackmarshal_deployment:
   clusters:
     - id: east-1                     # lowercase DNS label
       namespace: rackmarshal-qa-east
+      gatewayNamespace: rackmarshal-qa-east-gateway   # gateway alone; see Least privilege
       issuer: https://oidc.east-1.example.net
       jwks: files/qa-east/clusters/east-1.jwks.json      # pinned; fingerprint in the ceremony record
       kubeconfig: vault:kv/rackmarshal/qa-east/clusters/east-1  # secret-manager reference
@@ -145,7 +146,8 @@ Loki stream per instance per restart.
 
 `rackmarshal_identity` renders `clusters` into `identity`'s cluster issuer registry
 ([0006](0006-identity.md)), mapping service account `<namespace>/rackmarshal-<name>` to
-`spiffe://<environment-id>/service/<name>`. The Kubernetes object keeps the prefix because it shares a
+`spiffe://<environment-id>/service/<name>`, except that `gateway`'s account is mapped from
+`<gatewayNamespace>`. The Kubernetes object keeps the prefix because it shares a
 namespace with whatever else is deployed there; the SPIFFE path does not, because the environment's
 trust domain already scopes it.
 
@@ -207,6 +209,7 @@ on role and playbook YAML; the rest run on rendered output. Initial rule set (pr
 |------------|-------------------------------------------------------------------------------------------|
 | inventory  | `name` DNS label, `tier` one of four, `id` 26 base32 characters; one ID per inventory      |
 | inventory  | every service resolves to a known target; `kubernetes` services name a listed cluster      |
+| inventory  | each cluster's `gatewayNamespace` differs from its `namespace`                             |
 | inventory  | cluster `jwks` fingerprints match the environment's ceremony record                        |
 | inventory  | `identity` and PostgreSQL never bind public interfaces or public load balancers     |
 | inventory  | images pinned by `@sha256:`; charts, packages, installers by SHA-256; `schemaVersion` never drops |
@@ -229,12 +232,28 @@ on role and playbook YAML; the rest run on rendered output. Initial rule set (pr
   for changed roles, with no deployment credentials and no network path to any environment.
   **`300-flow-main-branch-checks.yaml`** repeats them on `main`, plus every target test.
 - **Control node** — proposed as a dedicated, hardened VM per environment tier group that runs
-  `ansible-navigator` in the pinned execution environment. A systemd timer fetches `main`, runs
-  `git verify-commit` against an allowlist of maintainers' GPG keys (every Rackmarshal repository requires
-  GPG-signed commits, per [Naming & conventions](0001-project-repositories.md#naming--conventions)),
-  renders and re-runs Conftest locally, and only then runs `site.yaml` in check mode, followed by apply
-  for inventories whose `autoApply` is true. `production` applies require a manual
-  `rackmarshal-deploy apply <env> <commit>` on the node.
+  `ansible-navigator` in the pinned execution environment. A systemd timer fetches `main`, verifies each
+  new commit as below (every Rackmarshal repository requires GPG-signed commits, per
+  [Naming & conventions](0001-project-repositories.md#naming--conventions)), renders and re-runs Conftest
+  locally, and only then runs `site.yaml` in check mode, followed by apply for inventories whose
+  `autoApply` is true. `production` applies require a manual `rackmarshal-deploy apply <env> <commit>` on
+  the node.
+- **Commit verification** — pull requests may be merged in the GitHub UI, but this repository's branch
+  rules allow only merge commits, never squash or rebase
+  ([merge methods](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/about-merge-methods-on-github)).
+  The control node accepts a commit on `main` only if `git verify-commit` shows it signed by a key in the
+  maintainers' allowlist, or if it is a two-parent merge commit that meets all three of these:
+  1. it is signed by GitHub's web-flow key, which signs commits made in the web interface
+     ([commit signature verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)),
+     pinned on the node from <https://github.com/web-flow.gpg> rather than fetched at run time;
+  2. every commit it brings in, `git rev-list <p1>..<p2>`, is signed by a maintainer key;
+  3. its tree equals the output of `git merge-tree --write-tree <p1> <p2>`
+     ([git-merge-tree](https://git-scm.com/docs/git-merge-tree)), so the merge introduces no change of
+     its own. A merge whose conflicts were resolved in the UI fails this check and must be redone on a
+     branch with signed commits.
+
+  The web-flow key alone therefore proves only that GitHub recorded the merge; every line it deploys
+  still traces to a maintainer signature.
 
 #### Upgrade and rollback
 
@@ -290,7 +309,8 @@ Performed by two people on an offline, freshly imaged workstation, with a writte
    and the JWKS from `/openid/v1/jwks`
    ([issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery))
    and the second re-reads them independently. Both compare SHA-256 fingerprints; the transcript records
-   cluster ID, issuer, namespace, and fingerprint.
+   cluster ID, issuer, both namespaces, and fingerprint. A cluster administrator installs the service
+   account admission policy (see Least privilege and secrets), and the transcript records it.
 6. **Publish** the root certificate and an initial root CRL (`nextUpdate` 180 days, re-signed at each
    ceremony), and commit the bundle, fingerprints, and JWKS in the pull request that adds the inventory.
 
@@ -334,14 +354,27 @@ ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OC
 4. Key and certificate go to an `emptyDir` with `medium: Memory`, a tmpfs shared with the main container
    ([volumes](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir)), which renews in place. A
    deleted pod takes its key with it; its replacement enrolls again.
-5. The token is never logged, copied, or exposed as a variable. The namespace enforces the `restricted`
+5. The token is never logged, copied, or exposed as a variable. Each namespace enforces the `restricted`
    [Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/), and
    only cluster administrators may create tokens for Rackmarshal service accounts.
 
 #### Least privilege and secrets
 
-- **Access** — the control node's kubeconfig binds a namespaced Role limited to the kinds the charts
-  render, never a ClusterRole. Hosts use per-environment SSH keys with `become` only where needed,
+- **Namespaces are identities** — write access to workloads in a namespace is equivalent to every
+  service identity in it: whoever can create a pod there can mount any of its service accounts' projected
+  tokens and enroll as that service. `gateway`, whose certificate lets a peer assert any principal
+  ([0008](0008-gateway.md)), therefore runs alone in `gatewayNamespace`. In each namespace a
+  [ValidatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/)
+  restricts each Rackmarshal service account to pods of its own workload: a pod naming
+  `rackmarshal-<name>` must carry `app.kubernetes.io/name: <name>`. The policy is cluster-scoped, so a
+  cluster administrator installs it at registration (ceremony step 5) and the runbook records it. It stops
+  one service's workload from naming another's account by mistake or through a bad chart value; it cannot
+  stop someone who writes pods deliberately, because labels are theirs to set, which is why the namespace
+  boundary is the control.
+- **Access** — the control node's kubeconfig binds a namespaced Role in the shared service namespace,
+  limited to the kinds the charts render and granting nothing in `gatewayNamespace`; that namespace has
+  its own narrower Role, limited to the kinds the `gateway` chart renders. Neither is ever a ClusterRole.
+  Hosts use per-environment SSH keys with `become` only where needed,
   including Windows, officially supported over SSH since ansible-core 2.18 on Windows Server 2022 and
   later ([Windows SSH](https://docs.ansible.com/ansible/latest/os_guide/windows_ssh.html)). Only trusted
   users may control the Docker daemon
@@ -389,8 +422,9 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
 - **Policy** — `opa test` with passing and failing fixtures for every rule, and golden rendered output
   per target for a reference inventory.
 - **Kubernetes** — kind v0.33.0 (`kindest/node:v1.37.0`) in pull-request CI: install every chart, enroll
-  against a SoftHSM-backed `identity`, reschedule pods, and reject replayed, wrong-audience, and
-  other-service tokens. Nightly: k3s on `ubuntu-24.04-arm` and kind 1.35 and 1.36 node images
+  against a SoftHSM-backed `identity`, reschedule pods, reject replayed, wrong-audience, and
+  other-service tokens, and refuse at admission a pod that names another service's account. Nightly:
+  k3s on `ubuntu-24.04-arm` and kind 1.35 and 1.36 node images
   ([kind v0.33.0](https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0)).
 - **Hosts** — Molecule scenarios for `podman`, `docker`, and `package` in systemd-capable containers per
   OS family on `ubuntu-24.04` and `ubuntu-24.04-arm` runners
@@ -451,7 +485,12 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
   [issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/),
   [volumes](https://kubernetes.io/docs/concepts/storage/volumes/),
   [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/),
+  [ValidatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/),
   [releases](https://kubernetes.io/releases/).
+- GitHub [merge methods](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/about-merge-methods-on-github)
+  and [commit signature verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)
+  (the `web-flow` key at <https://github.com/web-flow.gpg>);
+  [git-merge-tree](https://git-scm.com/docs/git-merge-tree).
 - [podman-systemd.unit](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html),
   [Compose secrets](https://docs.docker.com/compose/how-tos/use-secrets/),
   [Docker security](https://docs.docker.com/engine/security/),

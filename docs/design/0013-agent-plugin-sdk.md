@@ -260,9 +260,10 @@ are separate capabilities so a plugin that only reads results cannot propose sta
 4. **Gate** — `Init` carries the grant. `serve` rejects RPCs outside it with `PERMISSION_DENIED`
    (`capability_not_granted`), and `serve.Granted(ctx)` exposes the privilege grant to handlers.
 5. **Enforce** — in-plugin checks are defense in depth. The agent applies the grant from outside the
-   plugin (0012): a dedicated user and cgroup limits set through `SysProcAttr`, egress only through its
-   loopback proxy, and the executor's network lockdown. That is least privilege, not a sandbox against
-   hostile code; the trust basis stays the signed plugin.
+   plugin (0012): the executor launches every plugin as its own user (`rackmarshal-plugin-<name>`) with
+   cgroup limits set through `SysProcAttr`, egress only through the loopback proxy in
+   `rackmarshal-agent serve`, and the executor's network lockdown. That is least privilege, not a
+   sandbox against hostile code; the trust basis stays the signed plugin.
 
 #### Network grants
 
@@ -284,13 +285,17 @@ privileges:
   mirror for the declared host (0012). Every other grant must be listed in the agent's root-owned
   `plugins.grants` configuration, which narrows the manifest's request and never widens it, so a
   manifest asking for `{host: "*"}` reaches nothing until an operator names the hosts.
-- **Modes** — the grant's `mode` selects entries: the validator runs as `refresh` (from `serve`) or
-  `verify` (from the executor, never with network).
-- **Enforcement** — the agent, not the OS, is the egress path: it runs a loopback proxy scoped to the
-  grant and passes it in `Init` and through `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`, so the same rules
-  hold on Linux, Windows, and macOS (0012). `serve.Granted(ctx)` exposes the allowlist so a plugin's
-  own clients refuse other destinations first. Neither check contains hostile code, which is why the
-  grant is only given to signed plugins the operator approved.
+- **Modes** — the grant's `mode` selects entries. The executor launches the validator in both modes:
+  `refresh` when `rackmarshal-agent serve` asks for a trust refresh, and `verify` for install decisions,
+  never with network.
+- **Enforcement** — the agent, not the OS, is the egress path: `rackmarshal-agent serve`, the process
+  with network access, runs a loopback proxy scoped to the grant, the single enforcement point for
+  network grants, so the same rules hold on Linux, Windows, and macOS (0012). `host.Launch` passes the
+  proxy address and a per-process token on an inherited file descriptor, never in the environment, and
+  the SDK sets `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` only for the tools a plugin execs.
+  `serve.Granted(ctx)` exposes the allowlist so a plugin's own clients refuse other destinations first.
+  Neither check contains hostile code, which is why the grant is only given to signed plugins the
+  operator approved.
 
 #### Environment check
 
@@ -327,9 +332,12 @@ func main() {
 ```
 
 `serve.Main` checks for the magic cookie and a handler for every declared capability, and keeps the
-original stderr for logging. It installs interceptors for panic recovery (`INTERNAL`, `plugin_panic`,
-no stack in the reply), the `Init`, capability, and mode gates, trace extraction, and message size, then
-calls `plugin.Serve` with gRPC only. `Options.Verifier` registers `VerifierService`.
+original stderr for logging. On Linux it first makes the process non-dumpable (`PR_SET_DUMPABLE` set to
+0, [prctl(2)](https://man7.org/linux/man-pages/man2/prctl.2.html)), before it reads the proxy
+descriptor, so another process of the same user cannot attach to it or read its memory. It installs
+interceptors for panic recovery (`INTERNAL`, `plugin_panic`, no stack in the reply), the `Init`,
+capability, and mode gates, trace extraction, and message size, then calls `plugin.Serve` with gRPC
+only. `Options.Verifier` registers `VerifierService`.
 
 #### Host side (`host`)
 
@@ -363,7 +371,9 @@ declares `core: true` and `verifier:sigstore`; otherwise it returns `ErrNotCoreV
 | `RunnerFunc`       | optional, from the caller         | isolation is 0012's, through `SysProcAttr`     |
 
 `host` requires an absolute path to a regular file. On Unix, the file and its parent directories must
-not be writable by group or others.
+not be writable by group or others. When the caller sets a proxy address and token in `host.Config`,
+`host.Launch` passes them on an inherited file descriptor
+([`exec.Cmd.ExtraFiles`](https://pkg.go.dev/os/exec#Cmd)), never in `Env`.
 
 #### Trace context
 
@@ -417,7 +427,8 @@ None; only in-memory grant and environment state per plugin process.
   sidecar re-checked against the bundle pin at launch) and the writable-path refusal close that window
   in practice.
 - **Clean environment** — plugins never receive the agent's variables, certificate, key, or token, and
-  have no path to `gateway`.
+  have no path to `gateway`. A plugin's own proxy token arrives on a file descriptor, not in its
+  environment.
 - **Untrusted replies** — the agent validates and size-caps facts and verifier replies, and never shows
   plugin error details to operators verbatim.
 - **Least privilege** — manifests default to no root, exec, writes, or network. Network grants are host
@@ -476,7 +487,8 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
   changes from `Plan` after `Apply` for author-supplied samples.
 - **SDK tests** — negotiation (host `{1,2}` against plugin `{1}`), a checksum mismatch, the
   writable-path refusal, `core: true` or `verifier:sigstore` without `Config.Core` refused, network grant
-  validation, fuzzers, `-race`, and the allowlist.
+  validation, the proxy token passed only on its descriptor, a non-dumpable plugin process on Linux,
+  fuzzers, `-race`, and the allowlist.
 
 ## Alternatives considered
 

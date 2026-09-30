@@ -197,8 +197,9 @@ Level-triggered and idempotent, modeled on Kubernetes controllers
    devices, run the driver's `Observe` → `Plan` → `Apply` → `Observe`.
 6. **Record** status and requeue failures with exponential backoff (cap 30 minutes).
 
-Inventory changes arrive by long-polling [0009](0009-inventory.md)'s `GET /endpoint-events` with a
-durable cursor; the resync interval remains a backstop.
+Inventory changes arrive by long-polling [0009](0009-inventory.md)'s `GET /endpoint-events`, which is
+tenant-scoped like every inventory read, with one durable cursor per tenant that holds documents here;
+the resync interval remains a backstop.
 
 #### Policy (OPA)
 
@@ -207,8 +208,8 @@ durable cursor; the resync interval remains a backstop.
   `rego` turns into a topdown cancel.
 - **Contract** — packages `rackmarshal.admission`, `rackmarshal.dispatch`, and `rackmarshal.host`; each defines
   `deny contains {"code": …, "message": …}`. Input is `document`, `principal`, `tenant`, `environment`
-  (`id`, `name`, `tier`), `endpoint` (`id`, `labels`, `facts`), and `now`. Errors, timeouts, and
-  non-set results deny.
+  (`id`, `name`, `tier`), `endpoint` (`id`, `labels`, `facts`), and `now`. Errors, timeouts,
+  undefined results, and non-set results deny; no document setting relaxes that.
 - **Layers** — platform policies embedded in the binary are evaluated first and cannot be disabled by
   tenants; plugin policies from each verified provisioner bundle follow
   ([0021](0021-plugin-extensibility.md)); tenant `Policy` documents last. All three must allow.
@@ -285,6 +286,19 @@ type Driver interface {
   third party extends the service through a plugin instead ([0021](0021-plugin-extensibility.md)).
 - **Safety** — one lease per device, a per-connection concurrency cap, and per-call timeouts.
   `DirectiveSet.spec.mode: audit` runs `Observe` and `Plan` only.
+- **No command injection** — the `ssh` driver builds commands only from driver-owned templates, one set
+  per device platform, each applying that platform's quoting rules. Tenant values are validated against
+  the resource schema's patterns first and enter a template only as quoted arguments; they are never
+  concatenated into a command string. `netconf` sends structured RPCs marshaled with `encoding/xml`,
+  never XML text taken from a document.
+- **Egress** — every driver dials through one dialer that checks the address actually being connected
+  to, after DNS resolution, in [`net.Dialer`](https://pkg.go.dev/net#Dialer)'s `Control` hook, so a name
+  that resolves differently at dial time cannot slip past. It always refuses loopback, link-local
+  (`169.254.0.0/16`, `fe80::/10`), cloud metadata addresses (such as `169.254.169.254` and AWS's IPv6
+  [`fd00:ec2::254`](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html)),
+  and the control-plane CIDRs in `drivers.egress.deniedCidrs`, whatever a `DeviceConnection` or a
+  redirect names. Hardened tiers also require `drivers.egress.allowedCidrs`, the operator's list of
+  device networks, and refuse every address outside it.
 - **Observed state** is written back to `inventory` through its `internal` API (0009), so both
   enforcement paths converge against one catalog.
 
@@ -391,8 +405,10 @@ placed in a policy input, a script value, or a rendered resource.
 - **Plugin releases** — Sigstore verification runs at import in this service, and again on hosts in the
   core validator against the identity in each pin (0012). `PluginPublisher` documents are audited like
   policies, and writing them is a separate permission from `Plugin`.
-- **Devices** — TLS verification is mandatory and SSH host keys are pinned in `DeviceConnection`.
-  Skipping either is the last-resort feature `insecure-device-transport`.
+- **Devices** — TLS verification is mandatory and SSH host keys are pinned in `DeviceConnection`; a
+  connection for an SSH-based driver (`ssh`, `netconf`) without `ssh.hostKey` fails admission
+  ([0020](0020-desired-state-kinds.md)). Skipping TLS verification is the last-resort feature
+  `insecure-device-transport`. Driver egress is confined as in Agentless drivers above.
 
 ### Environment awareness
 
@@ -400,13 +416,14 @@ Requires `name`, `tier`, `id`, and `caBundle` (it serves and makes mutual-TLS co
 `environmentId`, and agents reject any other. `DeviceConnection`s are per environment and never copied
 between them.
 
-| Setting                        | `production` / `staging`           | `test` / `development`     |
-|--------------------------------|------------------------------------|----------------------------|
-| Script and policy limit ceilings | fixed at defaults                | may be raised              |
-| Per-script limits              | clamped to the ceilings            | clamped to the ceilings    |
-| Rego print statements          | off                                | `development` only         |
-| `insecure-device-transport`    | refused in `production` unless overridden | allowed, logged     |
-| OpenAPI UI                     | off                                | on                         |
+| Setting                          | `production` / `staging`                  | `test` / `development`  |
+|----------------------------------|-------------------------------------------|-------------------------|
+| Script and policy limit ceilings | fixed at defaults                         | may be raised           |
+| Per-script limits                | clamped to the ceilings                   | clamped to the ceilings |
+| Rego print statements            | off                                       | `development` only      |
+| `insecure-device-transport`      | refused in `production` unless overridden | allowed, logged         |
+| `drivers.egress.allowedCidrs`    | required when devices are used            | optional                |
+| OpenAPI UI                       | off                                       | on                      |
 
 ### Logging & telemetry
 
@@ -421,25 +438,27 @@ digests. Metrics: `rackmarshal.provisioner.reconcile.duration`, `rackmarshal.pro
 Prefix `RACKMARSHAL_PROVISIONER_`, plus the starter's `server` and `database` blocks and the library blocks
 from [CONVENTIONS.md](CONVENTIONS.md).
 
-| YAML                         | Variable                                         | Default                      |
-|------------------------------|--------------------------------------------------|------------------------------|
-| `reconcile.workers`          | `RACKMARSHAL_PROVISIONER_RECONCILE_WORKERS`            | `8`                          |
-| `reconcile.resyncInterval`   | `RACKMARSHAL_PROVISIONER_RECONCILE_RESYNC_INTERVAL`    | `15m`                        |
-| `plugins.enabled`            | `RACKMARSHAL_PROVISIONER_PLUGINS_ENABLED`              | `true`                       |
-| `plugins.socketDir`          | `RACKMARSHAL_PROVISIONER_PLUGINS_SOCKET_DIR`           | `/run/rackmarshal-provisioner/plugins` |
-| `plugins.startTimeout`       | `RACKMARSHAL_PROVISIONER_PLUGINS_START_TIMEOUT`        | `30s`                        |
-| `plugins.callTimeout`        | `RACKMARSHAL_PROVISIONER_PLUGINS_CALL_TIMEOUT`         | `10s`                        |
-| `plugins.result.maxBytes`    | `RACKMARSHAL_PROVISIONER_PLUGINS_RESULT_MAX_BYTES`     | `16384`                      |
-| `reconcile.leaseDuration`    | `RACKMARSHAL_PROVISIONER_RECONCILE_LEASE_DURATION`     | `60s`                        |
-| `policy.evalTimeout`         | `RACKMARSHAL_PROVISIONER_POLICY_EVAL_TIMEOUT`          | `500ms`                      |
-| `script.maxAllocs`           | `RACKMARSHAL_PROVISIONER_SCRIPT_MAX_ALLOCS`            | `100000` (script ceiling)    |
-| `script.timeout`             | `RACKMARSHAL_PROVISIONER_SCRIPT_TIMEOUT`               | `2s`                         |
-| `bundle.validity`            | `RACKMARSHAL_PROVISIONER_BUNDLE_VALIDITY`              | `168h`                       |
-| `bundle.maxWait`             | `RACKMARSHAL_PROVISIONER_BUNDLE_MAX_WAIT`              | `60s`                        |
-| `inventory.url`              | `RACKMARSHAL_PROVISIONER_INVENTORY_URL`                | required                     |
-| `secrets.directory`          | `RACKMARSHAL_PROVISIONER_SECRETS_DIRECTORY`            | required if devices are used |
-| `plugins.trustedRootFile`    | `RACKMARSHAL_PROVISIONER_PLUGINS_TRUSTED_ROOT_FILE`    | packaged fallback            |
-| `plugins.tufRefreshInterval` | `RACKMARSHAL_PROVISIONER_PLUGINS_TUF_REFRESH_INTERVAL` | `24h`                        |
+| YAML                          | Variable                                               | Default                                |
+|-------------------------------|--------------------------------------------------------|----------------------------------------|
+| `reconcile.workers`           | `RACKMARSHAL_PROVISIONER_RECONCILE_WORKERS`            | `8`                                    |
+| `reconcile.resyncInterval`    | `RACKMARSHAL_PROVISIONER_RECONCILE_RESYNC_INTERVAL`    | `15m`                                  |
+| `plugins.enabled`             | `RACKMARSHAL_PROVISIONER_PLUGINS_ENABLED`              | `true`                                 |
+| `plugins.socketDir`           | `RACKMARSHAL_PROVISIONER_PLUGINS_SOCKET_DIR`           | `/run/rackmarshal-provisioner/plugins` |
+| `plugins.startTimeout`        | `RACKMARSHAL_PROVISIONER_PLUGINS_START_TIMEOUT`        | `30s`                                  |
+| `plugins.callTimeout`         | `RACKMARSHAL_PROVISIONER_PLUGINS_CALL_TIMEOUT`         | `10s`                                  |
+| `plugins.result.maxBytes`     | `RACKMARSHAL_PROVISIONER_PLUGINS_RESULT_MAX_BYTES`     | `16384`                                |
+| `reconcile.leaseDuration`     | `RACKMARSHAL_PROVISIONER_RECONCILE_LEASE_DURATION`     | `60s`                                  |
+| `policy.evalTimeout`          | `RACKMARSHAL_PROVISIONER_POLICY_EVAL_TIMEOUT`          | `500ms`                                |
+| `script.maxAllocs`            | `RACKMARSHAL_PROVISIONER_SCRIPT_MAX_ALLOCS`            | `100000` (script ceiling)              |
+| `script.timeout`              | `RACKMARSHAL_PROVISIONER_SCRIPT_TIMEOUT`               | `2s`                                   |
+| `bundle.validity`             | `RACKMARSHAL_PROVISIONER_BUNDLE_VALIDITY`              | `168h`                                 |
+| `bundle.maxWait`              | `RACKMARSHAL_PROVISIONER_BUNDLE_MAX_WAIT`              | `60s`                                  |
+| `inventory.url`               | `RACKMARSHAL_PROVISIONER_INVENTORY_URL`                | required                               |
+| `secrets.directory`           | `RACKMARSHAL_PROVISIONER_SECRETS_DIRECTORY`            | required if devices are used           |
+| `drivers.egress.allowedCidrs` | `RACKMARSHAL_PROVISIONER_DRIVERS_EGRESS_ALLOWED_CIDRS` | empty; required in hardened tiers      |
+| `drivers.egress.deniedCidrs`  | `RACKMARSHAL_PROVISIONER_DRIVERS_EGRESS_DENIED_CIDRS`  | empty (control-plane CIDRs)            |
+| `plugins.trustedRootFile`     | `RACKMARSHAL_PROVISIONER_PLUGINS_TRUSTED_ROOT_FILE`    | packaged fallback                      |
+| `plugins.tufRefreshInterval`  | `RACKMARSHAL_PROVISIONER_PLUGINS_TUF_REFRESH_INTERVAL` | `24h`                                  |
 
 ### Build, release & versioning
 
@@ -459,8 +478,10 @@ support the current and previous `apiVersion`.
 - **Determinism** — rendering the same fixture twice yields the same digest.
 - **Reconciliation** — integration tests on a disposable PostgreSQL: lease expiry, two workers, backoff,
   and selector changes.
-- **Drivers** — `httptest` and an in-process `x/crypto/ssh` server. Contract tests against the OpenAPI
-  document, fuzzing, `-race`, and the module allowlist.
+- **Drivers** — `httptest` and an in-process `x/crypto/ssh` server. The dialer refuses loopback,
+  link-local, metadata, denied, and non-allowlisted addresses, including through a DNS name and a
+  redirect; shell metacharacters in every templated `ssh` argument reach the server quoted. Contract
+  tests against the OpenAPI document, fuzzing, `-race`, and the module allowlist.
 - **Plugin verification** — a wrong identity, wrong digest, missing log entry, or unknown trusted root
   fails import, and no bundle may carry an unverified pin or a pin without its publisher identity.
 
@@ -526,6 +547,9 @@ support the current and previous `apiVersion`.
   and [row security policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html).
 - [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110) — conditional requests;
   [RFC 6241](https://www.rfc-editor.org/rfc/rfc6241) — NETCONF.
+- [`net.Dialer`](https://pkg.go.dev/net#Dialer) — the `Control` hook the driver dialer checks addresses
+  in; [Amazon EC2 instance metadata](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html)
+  — the IPv4 and IPv6 metadata addresses.
 - [Kubernetes API conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md).
 - [wazero](https://github.com/tetratelabs/wazero), [OPA Wasm](https://www.openpolicyagent.org/docs/wasm),
   [golang-opa-wasm](https://github.com/open-policy-agent/golang-opa-wasm) (archived).

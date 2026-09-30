@@ -52,15 +52,15 @@ It reaches Rackmarshal only through the gateway's agent ingress via `sdk`.
 
 ### Responsibilities
 
-| Process                | Runs as                            | Does                                                                                               |
-|------------------------|------------------------------------|----------------------------------------------------------------------------------------------------|
-| `rackmarshal-agent serve`    | `rackmarshal-agent` user (+ `tss` group) | enrollment, key use, renewal, bundle pull, CRL fetch, TUF refresh through the validator, reporting |
-| `rackmarshal-agent executor` | root, no network                   | bundle and plugin verification, OPA, Tengo, enforcement, plugins, privileged inventory             |
+| Process                      | Runs as                                  | Does                                                                                                       |
+|------------------------------|------------------------------------------|------------------------------------------------------------------------------------------------------------|
+| `rackmarshal-agent serve`    | `rackmarshal-agent` user (+ `tss` group) | enrollment, key use, renewal, bundle pull, CRL fetch, TUF refresh requests, plugin egress proxy, reporting |
+| `rackmarshal-agent executor` | root, no network                         | bundle and plugin verification, OPA, Tengo, enforcement, launching every plugin, privileged inventory      |
 
-The processes share only a spool directory. `serve` writes bundles, CRLs, and TUF metadata to
-`spool/inbox` (group `rackmarshal-agent`, `0770`); the executor treats them as untrusted, and writes reports
-and inventory to `spool/outbox`. Other commands: `enroll`, `status`, `version`, and
-`plugin verify <path>`.
+The processes share only a spool directory. `serve` writes bundles, CRLs, and TUF refresh requests to
+`spool/inbox` (group `rackmarshal-agent`, `0770`); the executor treats them as untrusted, and writes
+reports, inventory, and proxy registrations to `spool/outbox`. `serve` never launches a plugin. Other
+commands: `enroll`, `status`, `version`, and `plugin verify <path>`.
 
 ### Interfaces
 
@@ -94,7 +94,9 @@ the host is re-enrolled.
   older than its `nextUpdate` stops new bundles from being accepted, and why `revocation.crlUrl` may name
   a source that does not pass through the gateway.
 - **Verify** (executor, fail closed): the DSSE signature; a signer chain to the environment roots
-  evaluated at `issuedAt`; a signer SPIFFE ID of `spiffe://<environment-id>/service/provisioner`,
+  evaluated at `issuedAt`, with `issuedAt` no earlier than the last accepted bundle's and no later than
+  now plus `bundle.clockSkew` (default 60 s), so a signer whose certificate has expired cannot backdate a
+  bundle into its validity; a signer SPIFFE ID of `spiffe://<environment-id>/service/provisioner`,
   not revoked by a CRL whose `nextUpdate` has not passed; `environmentId` and `agentId` equal to the
   recorded values; `generation` greater than the last accepted one but not more than
   `bundle.maxGenerationJump` (default 1000) beyond it, so a forged bundle cannot set it near the type's
@@ -162,8 +164,8 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
 - **Core trust** — the agent embeds the Rackmarshal core-plugin public keys with `//go:embed`
   ([`embed`](https://pkg.go.dev/embed)): ECDSA P-256, as a list holding the current and next key for
   rotation. The private key stays in an HSM or cloud KMS and is used only by the `agent-plugins`
-  release workflow (0014). Before install and before every launch, the process launching a core plugin
-  verifies its [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md) envelope with
+  release workflow (0014). Before install and before every launch, the executor, which launches every
+  plugin, verifies a core plugin's [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/protocol.md) envelope with
   the standard-library ECDSA code that already verifies bundles:
   - payload type exactly `application/vnd.rackmarshal.core-plugin.v1+json`, signed by an embedded key;
   - payload `{name, version, platform, sha256, protocolVersions, environmentIds}` whose `name` is the
@@ -183,23 +185,26 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
      carries the publisher identity it used.
   2. **Validator** — the executor verifies the core `sigstore` plugin's envelope, launches it in
      `verify` mode with no network, and calls `VerifyArtifact` (0013) with the digest, the asset's
-     `.sigstore.json`, the pin's publisher identity, and the TUF metadata from `spool/inbox/tuf/`. The
-     validator re-verifies the TUF chain from the root embedded in it, derives `trusted_root.json`, and
-     checks the certificate identity, the transparency-log entry, and, for keyless certificates, the
-     SCT. The returned identity must equal the pin's; it is recorded in `state/` with the log index and
-     integrated time.
+     `.sigstore.json`, the pin's publisher identity, and the fetched TUF metadata from `state/trust/`.
+     The validator re-verifies the TUF chain from the root embedded in it, derives
+     `trusted_root.json`, and checks the certificate identity, the transparency-log entry, and, for
+     keyless certificates, the SCT. The returned identity must equal the pin's; it is recorded in
+     `state/` with the log index and integrated time.
 
   The verifier used for install decisions is always the core-signed `sigstore` plugin; a non-core plugin
   that declares a verifier capability is never called for them.
-- **Trust refresh** — every `plugins.sigstore.tufRefreshInterval`, `serve` verifies the validator's core
-  envelope and launches it in `refresh` mode as the `rackmarshal-plugin` user. Its only network grant is the
-  TUF repository: `https://tuf-repo-cdn.sigstore.dev`, sigstore-go's
+- **Trust refresh** — every `plugins.sigstore.tufRefreshInterval`, `serve` asks the executor for a
+  refresh with a request in `spool/inbox/`, their only channel. The executor verifies the validator's
+  core envelope and launches it in `refresh` mode as its own `rackmarshal-plugin-sigstore` user. Its only
+  network grant is the TUF repository: `https://tuf-repo-cdn.sigstore.dev`, sigstore-go's
   [`DefaultMirror`](https://pkg.go.dev/github.com/sigstore/sigstore-go/pkg/tuf) and the published
   [sigstore/root-signing](https://github.com/sigstore/root-signing) repository, or
-  `plugins.sigstore.tufMirror`. `RefreshTrust` returns the metadata, and `serve` writes it to
-  `spool/inbox/tuf/`, so the plugin user needs no spool access. The grant is enforced in the validator's
-  fetcher (HTTPS to the granted host and port, no redirects elsewhere); `IPAddressAllow=` takes only
-  addresses and prefixes, not host names
+  `plugins.sigstore.tufMirror`, reached through `serve`'s egress proxy like every other grant (see
+  Network grants). `RefreshTrust` returns the metadata to the executor, which stores it in
+  `state/trust/`, still untrusted, so the validator needs no spool or state access. The proxy is the
+  grant's enforcement point; the validator's fetcher also refuses other hosts and off-host redirects,
+  as defense in depth. The OS cannot enforce the grant by name: `IPAddressAllow=` takes only addresses
+  and prefixes, not host names
   ([systemd.resource-control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)).
 - **Trust verification** — the executor treats that metadata as untrusted. `verify` mode checks the
   signatures, versions, and expiry of root, timestamp, snapshot, and targets against a fixed start time,
@@ -217,32 +222,44 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
 - **Environment** — the agent is the only source: name, tier, and ID reach the plugin in the `Init`
   RPC (0013), never as `RACKMARSHAL_PLUGIN_<NAME>_ENVIRONMENT_*` variables, which `host.Launch` refuses. A
   plugin needs no environment configuration of its own to start.
-- **Privileges** — plugins run as the `rackmarshal-plugin` user by default (`SysProcAttr.Credential`). Root is
-  granted only when local, root-owned config lists the plugin under `plugins.privileged`; a bundle cannot
-  grant it. The validator never runs as root.
+- **Privileges** — the executor launches every plugin process, in every mode; `serve` launches none. Each
+  unprivileged plugin runs as its own user, `rackmarshal-plugin-<name>` (`SysProcAttr.Credential`),
+  created when the plugin is installed (by the agent package for core plugins), so one plugin cannot
+  signal, trace, or read the files of another. Root is granted only when local, root-owned config lists
+  the plugin under `plugins.privileged`; a bundle cannot grant it. The validator never runs as root. On
+  Linux, `serve.Main` (0013) makes each plugin process non-dumpable (`PR_SET_DUMPABLE` set to 0,
+  [prctl(2)](https://man7.org/linux/man-pages/man2/prctl.2.html)) before it reads anything from the
+  agent, so no other unprivileged process can attach to it or read its memory.
 - **Limits** — on Linux, each plugin starts in its own child cgroup (`SysProcAttr.UseCgroupFD`) under
   the executor's delegated subtree, with `memory.max`, `cpu.max`, and `pids.max`. On Windows, a Job
   Object (`CreateJobObject`, `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`). On macOS, `setrlimit` only.
-- **Network grants, enforced by the agent** — the agent is the egress path; it relies on no OS network
-  feature, so the rules are identical on Linux, Windows, and macOS. For each plugin process with a
-  network grant (`packages`, and the validator's `refresh` mode), the agent starts a proxy bound to
-  loopback on an ephemeral port, authorized by a per-process token, that accepts only the `{host,
-  port}` pairs in that grant and refuses every other destination, redirect, and CONNECT target. The
+- **Network grants, enforced by the agent** — `serve`, the process with network access, is the egress
+  path; the rules rely on no OS network feature, so they are identical on Linux, Windows, and macOS.
+  For each plugin process with a network grant (`packages`, and the validator's `refresh` mode), `serve`
+  runs a proxy bound to loopback on an ephemeral port, which the executor unit's
+  `IPAddressAllow=localhost` still lets plugins reach. It is authorized by a per-process token, accepts
+  only the `{host, port}` pairs in that grant, and refuses every other destination, redirect, and
+  CONNECT target; it is the single enforcement point for network grants. The executor generates the
+  token at launch and registers only its SHA-256 and the grant with `serve` through `spool/outbox/`. The
   grant is the manifest's request narrowed by root-owned `plugins.grants` (0013), so a manifest asking
-  for `{host: "*"}` reaches nothing until an operator names the hosts. The agent passes the proxy to the
-  plugin two ways:
-  - the SDK's client uses it through `Init` (0013), and
-  - `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` are set in the plugin's environment, so tools the
-    plugin execs follow it too: apt supports `http_proxy` for system-wide configuration
+  for `{host: "*"}` reaches nothing until an operator names the hosts. The plugin receives the proxy
+  address and token on an inherited file descriptor
+  ([`exec.Cmd.ExtraFiles`](https://pkg.go.dev/os/exec#Cmd)), never in its environment, and uses them two
+  ways:
+  - the SDK's client reads them from that descriptor (0013), and
+  - the SDK sets `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`, with the token as proxy credentials, only
+    in the environment of tools the plugin execs, so they follow it too: apt supports `http_proxy` for
+    system-wide configuration
     ([apt-transport-http](https://manpages.ubuntu.com/manpages/noble/en/man1/apt-transport-http.1.html)),
     dnf honors the curl variables when its own `proxy` option is unset
     ([dnf.conf](https://dnf.readthedocs.io/en/latest/conf_ref.html)), and Go clients follow
     [`http.ProxyFromEnvironment`](https://pkg.go.dev/net/http#ProxyFromEnvironment).
 
   Refused requests are logged with the plugin name and destination. This is agent policy, not a
-  sandbox: a hostile plugin can open its own socket and bypass the proxy. The trust basis stays the
-  signed plugin and the capability grant the operator approved; the proxy stops an honest plugin from
-  reaching an ungranted destination and makes every attempt visible.
+  sandbox: a hostile plugin can open its own socket and bypass the proxy, reaching only what the
+  executor lockdown below leaves open. The trust basis stays the signed plugin and the capability grant
+  the operator approved; the proxy stops an honest plugin from reaching an ungranted destination and
+  makes every attempt visible.
 - **OS controls: executor lockdown always, per-plugin rules optional** — the executor lockdown always
   ships with the package: `IPAddressDeny=any` with `IPAddressAllow=localhost` in the executor's systemd
   unit (see Security), a block rule on the executor binary on Windows, and the pf equivalent on macOS,
@@ -350,14 +367,14 @@ comes in with go-plugin regardless.
 Under `/var/lib/rackmarshal-agent` (`%ProgramData%\rackmarshal-agent` on Windows); every write is atomic (temp file,
 `fsync`, rename):
 
-| Path              | Owner and mode             | Contents                                                                     |
-|-------------------|----------------------------|------------------------------------------------------------------------------|
-| `identity/`       | `rackmarshal-agent`, `0700`      | certificate, chain, key or TPM blobs, environment record                     |
-| `spool/inbox/`    | root:`rackmarshal-agent`, `0770` | fetched bundles, CRLs, and TUF metadata (`tuf/`), untrusted                  |
-| `spool/outbox/`   | root:`rackmarshal-agent`, `0750` | reports and inventory, capped at 50 MiB, oldest dropped and counted          |
-| `state/`          | root, `0700`               | last accepted generation and bundle, handler state, plugin verifications     |
-| `state/trust/`    | root, `0700`               | accepted TUF metadata versions and the verified `trusted_root.json`          |
-| `plugins/<name>/` | root, `0555` files         | `rackmarshal-plugin-<name>`, its `.sha256` sidecar, and core update envelopes      |
+| Path              | Owner and mode                   | Contents                                                                                          |
+|-------------------|----------------------------------|---------------------------------------------------------------------------------------------------|
+| `identity/`       | `rackmarshal-agent`, `0700`      | certificate, chain, key or TPM blobs, environment record                                          |
+| `spool/inbox/`    | root:`rackmarshal-agent`, `0770` | fetched bundles, CRLs, and TUF refresh requests, untrusted                                        |
+| `spool/outbox/`   | root:`rackmarshal-agent`, `0750` | reports, inventory, and proxy registrations; capped at 50 MiB, oldest reports dropped and counted |
+| `state/`          | root, `0700`                     | last accepted generation and bundle, handler state, plugin verifications                          |
+| `state/trust/`    | root, `0700`                     | fetched TUF metadata (untrusted), accepted versions, and the verified `trusted_root.json`         |
+| `plugins/<name>/` | root, `0555` files               | `rackmarshal-plugin-<name>`, its `.sha256` sidecar, and core update envelopes                     |
 
 Packaged core plugins and their envelopes live in `/usr/lib/rackmarshal-agent/plugins/<name>/` (root, `0555`),
 owned by the OS package manager.
@@ -382,37 +399,41 @@ owned by the OS package manager.
   the identity in its pin, which leaves a public record. Logs carry digests, key IDs, and identities,
   never key material.
 - **Core-plugin key** — only public keys are embedded. The private key signs only from the
-  `agent-plugins` release workflow through the HSM or KMS, whose audit log records each use.
-  Because a stolen key would otherwise reach every host, two limits apply: a core statement names the
-  environments it is valid for, and a revocation list of key IDs and plugin digests, signed by the other
-  embedded key and carried in the directive bundle, is applied before any core verification. A revoked
-  key or digest is refused even when its signature is valid, so recovery does not wait for an agent
-  release. Rotation travels the same path: the current and next public keys are both embedded, and the
-  bundle's `coreKeyId` names which is current (0011). The agent accepts core statements from the named
-  key and refuses the previous one once a bundle has moved forward. Introducing a third key still needs
-  an agent release, but making the next one current does not. Custody separates the two: the current key
-  signs only from the release workflow through the HSM or KMS, while the next key stays on an offline
-  HSM under split control. Activating it — or publishing the first bundle after a compromise — takes a
-  quorum of M of N release engineers and out-of-band approval, so no single compromised signer or
+  `agent-plugins` release workflow through the HSM or KMS, whose audit log records each use. A
+  statement's `environmentIds` does not limit a stolen key, whose holder simply signs `["*"]`. What does
+  is that a core-signed build newer than the packaged one reaches a host only through a pin in a
+  provisioner-signed bundle, and that a revocation list of key IDs and plugin digests, signed by the
+  other embedded key and carried in the directive bundle, is applied before any core verification. A
+  revoked key or digest is refused even when its signature is valid, so recovery does not wait for an
+  agent release. Rotation travels the same path: the current and next public keys are both embedded, and
+  the bundle's `coreKeyId` names which is current (0011). The agent accepts core statements from the
+  named key and refuses the previous one once a bundle has moved forward. Introducing a third key still
+  needs an agent release, but making the next one current does not. Custody separates the two: the
+  current key signs only from the release workflow through the HSM or KMS, while the next key stays on an
+  offline HSM under split control. Activating it — or publishing the first bundle after a compromise —
+  takes a quorum of M of N release engineers and out-of-band approval, so no single compromised signer or
   workflow can move every host, which is the property the two-key design exists for.
-- **Validator isolation** — the `rackmarshal-plugin` user, its own cgroup, no root, exec, or writes. `refresh`
-  mode has only the TUF grant and no spool access; `verify` mode has no network. Its replies are
-  size-capped, and an approval still needs the bundle pin.
+- **Validator isolation** — launched by the executor in both modes, as its own
+  `rackmarshal-plugin-sigstore` user in its own cgroup, non-dumpable, with no root, exec, or writes.
+  `refresh` mode has only the TUF grant, through `serve`'s proxy, and no spool access; `verify` mode has
+  no network. Its replies are size-capped, and an approval still needs the bundle pin.
 - **Fail closed** on any verification, policy, or pin failure; the previous accepted bundle keeps running.
-- **Fuzzing** covers DSSE, bundle, and core-statement decoding, and the spool readers, including TUF
-  metadata.
+- **Fuzzing** covers DSSE, bundle, and core-statement decoding, the spool readers, and TUF metadata.
 
 ### Environment awareness
 
 The four environment values come from enrollment ([CONVENTIONS.md](CONVENTIONS.md#environment)); logs,
 reports, bundles, and plugins are all checked against the recorded ID.
 
-| Behavior                                                 | `production` / `staging`                  | `test` / `development` |
-|----------------------------------------------------------|-------------------------------------------|------------------------|
-| File key store when no TPM                               | allowed, logged at `warn`                 | allowed                |
-| Local plugin not pinned by a bundle (`unpinned-plugins`) | refused in `production` unless overridden | allowed, logged        |
-| Signature verification (core statement, bundle pin)      | always required                           | always required        |
-| Local policy `print`, verbose plans                      | off                                       | on                     |
+| Behavior                                            | `production` / `staging`  | `test` / `development` |
+|-----------------------------------------------------|---------------------------|------------------------|
+| File key store when no TPM                          | allowed, logged at `warn` | allowed                |
+| Signature verification (core statement, bundle pin) | always required           | always required        |
+| Local policy `print`, verbose plans                 | off                       | on                     |
+
+There is no local unsigned or unpinned plugin in any tier: every launch needs a verified core statement,
+or a bundle pin plus the validator's Sigstore verification. Plugin authors test builds with
+`plugin-starter`'s `fakeagent` and `fakeprovisioner` ([0015](0015-plugin-starter.md)).
 
 ### Offline behavior
 
@@ -444,19 +465,20 @@ collector is in fact reachable. The executor is unchanged: it writes to the outb
 
 Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_*` per 0003.
 
-| YAML                                  | Variable                                            | Default                               |
-|---------------------------------------|-----------------------------------------------------|---------------------------------------|
-| `stateDirectory`                      | `RACKMARSHAL_AGENT_STATE_DIRECTORY`                       | `/var/lib/rackmarshal-agent`                |
+| YAML                                  | Variable                                                  | Default                               |
+|---------------------------------------|-----------------------------------------------------------|---------------------------------------|
+| `stateDirectory`                      | `RACKMARSHAL_AGENT_STATE_DIRECTORY`                       | `/var/lib/rackmarshal-agent`          |
 | `keystore.backend`                    | `RACKMARSHAL_AGENT_KEYSTORE_BACKEND`                      | `auto` (`tpm`, `windows-pcp`, `file`) |
 | `enforce.interval`                    | `RACKMARSHAL_AGENT_ENFORCE_INTERVAL`                      | `30m`                                 |
 | `enforce.disabledKinds`               | `RACKMARSHAL_AGENT_ENFORCE_DISABLED_KINDS`                | empty                                 |
 | `inventory.fullInterval`              | `RACKMARSHAL_AGENT_INVENTORY_FULL_INTERVAL`               | `6h`                                  |
-| `plugins.privileged`                  | YAML only                                           | empty                                 |
-| `plugins.grants`                      | YAML only                                           | empty (per plugin: network, paths)    |
-| `plugins.core.disabled`               | YAML only                                           | empty (every core plugin runs)        |
+| `plugins.privileged`                  | YAML only                                                 | empty                                 |
+| `plugins.grants`                      | YAML only                                                 | empty (per plugin: network, paths)    |
+| `plugins.core.disabled`               | YAML only                                                 | empty (every core plugin runs)        |
 | `plugins.memoryMax`                   | `RACKMARSHAL_AGENT_PLUGINS_MEMORY_MAX`                    | `256MiB`                              |
 | `plugins.sigstore.tufMirror`          | `RACKMARSHAL_AGENT_PLUGINS_SIGSTORE_TUF_MIRROR`           | `https://tuf-repo-cdn.sigstore.dev`   |
 | `plugins.sigstore.tufRefreshInterval` | `RACKMARSHAL_AGENT_PLUGINS_SIGSTORE_TUF_REFRESH_INTERVAL` | `24h`                                 |
+| `bundle.clockSkew`                    | `RACKMARSHAL_AGENT_BUNDLE_CLOCK_SKEW`                     | `60s`                                 |
 | `outbox.maxBytes`                     | `RACKMARSHAL_AGENT_OUTBOX_MAX_BYTES`                      | `52428800`                            |
 | `osControls.mode`                     | `RACKMARSHAL_AGENT_OS_CONTROLS_MODE`                      | `off` (`check`, `apply`)              |
 
@@ -482,8 +504,9 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 ### Testing
 
 - **Enrollment** against `sdktest` with a software TPM simulator where available (unverified choice).
-- **Verification tables** — wrong signer SPIFFE ID, wrong environment, rollback, expired `notAfter`,
-  stale CRL, and a plugin digest that no accepted bundle pins.
+- **Verification tables** — wrong signer SPIFFE ID, wrong environment, rollback, expired `notAfter`, an
+  `issuedAt` before the last accepted bundle's or beyond the skew, stale CRL, and a plugin digest that no
+  accepted bundle pins.
 - **Core plugins** — an envelope signed by an unknown key, a wrong payload type, `name`, or `platform`,
   a digest mismatch, a non-core binary at a core path, a disabled `sigstore` blocking installs, and
   rotation from the current to the next embedded key.
@@ -493,7 +516,9 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 - **Dispatch** — each kind reaches only the plugin granted its `resource:` capability; idempotence of
   the `files`, `packages`, and `services` plugins is tested with them in 0014.
 - **Sandbox and limits** — Tengo escapes, OPA timeouts, plugin memory and pid limits, and crash
-  quarantine. Fuzzing, `-race`, and the module allowlist.
+  quarantine. Every plugin, the validator in `refresh` mode included, is a child of the executor, runs
+  as its own user, is non-dumpable on Linux, and has no proxy token in its environment. Fuzzing,
+  `-race`, and the module allowlist.
 
 ## Alternatives considered
 

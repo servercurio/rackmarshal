@@ -258,8 +258,8 @@ Token formats belong to [0006](0006-identity.md). For JWT access tokens
 ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)), the gateway enforces:
 
 - **Algorithm allowlist** — `ES256` only, and `typ` must be `at+jwt`, following
-  [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725). `none`, HMAC, and embedded `jwk` or `x5u` headers
-  are rejected.
+  [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725). `none`, HMAC, and `jwk`, `jku`, `x5u`, or `x5c`
+  headers are rejected, matching [0006](0006-identity.md).
 - **Keys** — the environment's JWKS, fetched from `identity` over mutual TLS only.
 - **Environment binding** — `iss` must equal `auth.issuer`, which must contain `environment.id` (checked at
   startup). `aud` must contain `spiffe://<environment-id>/service/gateway`. A token from another
@@ -286,6 +286,11 @@ Token formats belong to [0006](0006-identity.md). For JWT access tokens
   CRL, each cached until `nextUpdate`, rejecting when neither is available within the window. The gateway
   re-checks the cached status on every request, not only at handshake, so a long-lived HTTP/2 connection
   is cut off once its certificate is revoked.
+- **Connection age** — the gateway closes every agent connection after at most
+  `server.agent.maxConnectionAge` (1 hour, less up to 10% random jitter so reconnects do not
+  synchronize). The agent must then handshake again, and `VerifyConnection` checks revocation on that
+  handshake, resumed or not. This bounds how long any connection lives on a single check, beside the
+  per-request re-check above.
 - **Responder addresses** — OCSP and CRL URLs come from gateway configuration (the internal
   `identity` endpoints), not from certificate AIA or CDP extensions, so agent-supplied certificates
   cannot steer the gateway's outbound requests. This needs a `revocation` option in `sdk`.
@@ -311,10 +316,16 @@ from private networks.
 #### Header and response hygiene
 
 - **Inbound** — `X-Rackmarshal-*`, `Forwarded`, and `X-Forwarded-*` headers from clients are removed, and
-  `Cookie` is dropped because Rackmarshal APIs do not use cookies. CSRF and CORS middleware are off because no
-  browser origin calls the gateway. [0016](0016-web-ui-architecture.md) settles this: the web surfaces
+  `Cookie` is dropped because Rackmarshal APIs do not use cookies. The one exception is the
+  `/identity/oidc/` protocol routes and the SAML SSO endpoint, where browsers do arrive: there the gateway
+  forwards only the `__Host-rackmarshal-login` login-binding cookie, drops every other cookie, and passes
+  back `identity`'s `Set-Cookie` for that cookie alone (0006). CSRF and CORS middleware are off because no
+  browser origin calls the API routes. [0016](0016-web-ui-architecture.md) settles this: the web surfaces
   are server-rendered relying parties that keep tokens server-side and call the gateway themselves, so a
-  browser never originates a cross-origin request to it and no token is ever exposed to one.
+  browser never originates a cross-origin request to it and no token is ever exposed to one. For the
+  protocol routes, CSRF protection is `identity`'s own: a code is issued only for a single-use
+  `login_verifier` presented with a binding cookie that matches the login challenge, so gateway
+  middleware would add nothing.
 - **Responses** — the starter's `Secure` middleware (HSTS, `nosniff`, frame denial) plus
   `Cache-Control: no-store`.
 - **Body limits** — 1 MiB on the operator ingress and 8 MiB on the agent ingress (inventory reports). Both
@@ -357,6 +368,7 @@ omitted here.
 | `server.operator.maxBodySize`          | `RACKMARSHAL_GATEWAY_SERVER_OPERATOR_MAX_BODY_SIZE`     | `1MiB`             |
 | `server.agent.enabled` / `.port`       | `RACKMARSHAL_GATEWAY_SERVER_AGENT_ENABLED` / `_PORT`    | `true` / `9443`    |
 | `server.agent.maxBodySize`             | `RACKMARSHAL_GATEWAY_SERVER_AGENT_MAX_BODY_SIZE`        | `8MiB`             |
+| `server.agent.maxConnectionAge`        | `RACKMARSHAL_GATEWAY_SERVER_AGENT_MAX_CONNECTION_AGE`   | `1h` (max `1h`)    |
 | `server.health.port`                   | `RACKMARSHAL_GATEWAY_SERVER_HEALTH_PORT`                | `8080`             |
 | `certificate.dir`                      | `RACKMARSHAL_GATEWAY_CERTIFICATE_DIR`                   | required           |
 | `certificate.enrollmentTokenFile`      | `RACKMARSHAL_GATEWAY_CERTIFICATE_ENROLLMENT_TOKEN_FILE` | first start only   |
@@ -392,10 +404,12 @@ omitted here.
   ingresses, every `operator` operation returns `404` on the agent ingress, and the reverse.
 - **TLS** — with `sdk` `sdktest`: TLS 1.2 rejected on the agent ingress; missing, expired,
   wrong-trust-domain, and non-agent certificates rejected on every route except enrollment; revoked
-  certificates rejected at handshake, on resumption, and mid-connection; OCSP down falls back to the CRL,
-  and both down beyond `nextUpdate` rejects.
-- **Tokens** — tables of wrong `alg`, `typ`, `iss`, and `aud`, other-environment keys, expired tokens, and
-  unknown `kid` refresh throttling.
+  certificates rejected at handshake, on resumption, and mid-connection; connections closed by
+  `maxConnectionAge`; OCSP down falls back to the CRL, and both down beyond `nextUpdate` rejects.
+- **Tokens** — tables of wrong `alg`, `typ`, `iss`, and `aud`, `jwk`, `jku`, `x5u`, and `x5c` headers,
+  other-environment keys, expired tokens, and unknown `kid` refresh throttling.
+- **Cookies** — only the login-binding cookie reaches `identity`, and only on the protocol routes, where
+  `Set-Cookie` passes back for it alone; every other route drops `Cookie`.
 - **Smuggling and hygiene** — `Connection: X-Rackmarshal-Principal`, spoofed `X-Forwarded-For`, encoded
   slashes, and duplicate `Authorization` headers. The first two are also table tests in the starter's
   `internal/middleware/proxy`, asserting the added header survives the `Connection` list and that the

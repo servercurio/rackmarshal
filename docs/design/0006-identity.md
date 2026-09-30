@@ -35,7 +35,8 @@ tokens and service certificate bootstrap
 
 **Non-goals**
 
-- Login pages, external IdP federation, and cookies — [0007](0007-sso.md).
+- Login pages, external IdP federation, and session cookies — [0007](0007-sso.md). `identity` sets
+  only the login-binding cookie described under Login delegation.
 - Request authentication at the edge and routing — [0008](0008-gateway.md).
 - The offline root and environment creation — [0005](0005-infrastructure.md).
 - Key storage on agents — [0012](0012-agent.md).
@@ -66,11 +67,20 @@ A single TLS 1.3 mutual-TLS listener on a private interface. Callers reach it th
 
 #### Login delegation
 
-Proposed: the **login-challenge model** of [Ory Hydra](https://www.ory.com/docs/oauth2-oidc/custom-login-consent/flow).
-`/authorize` and the SAML SSO endpoint create a login challenge and redirect the browser to
-`sso` with `login_challenge=<id>`. `sso` authenticates the user, then accepts the challenge
-over mutual TLS, and the browser returns to `/authorize` to receive a code. `identity` keeps all
-protocol logic; `sso` keeps all pages and federation.
+Proposed: the **login-challenge model** of [Ory Hydra](https://www.ory.com/docs/oauth2-oidc/custom-login-consent/flow),
+including its browser binding. `/authorize` and the SAML SSO endpoint create a login challenge, set the
+login-binding cookie `__Host-rackmarshal-login`, and redirect the browser to `sso` with
+`login_challenge=<id>`. The cookie is `Secure`, `HttpOnly`, `SameSite=Lax`, and `Path=/`, as the
+`__Host-` prefix requires ([MDN cookie prefixes](https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies#cookie_prefixes)),
+and holds 256 random bits whose SHA-256 is stored with the challenge. `sso` authenticates the user, then
+accepts the challenge over mutual TLS and receives a `login_verifier`: 256 random bits, bound to that
+challenge, single-use, valid for 60 seconds (proposed), and stored as SHA-256. `sso` redirects the browser
+back with `login_verifier=<value>`, and `/authorize` issues a code (or the SAML SSO endpoint an
+assertion) only if the verifier is valid and unused and the cookie matches the challenge's binding. A
+challenge ID or verifier carried to another browser is therefore useless, and a cross-site request that
+lacks the cookie cannot complete a login: the binding and the verifier are the CSRF protection for this
+route family, not gateway middleware (0008). `identity` keeps all protocol logic; `sso` keeps all
+pages, session cookies, and federation.
 
 #### Protocol endpoints
 
@@ -104,16 +114,17 @@ client's loopback redirect URIs match any port on `127.0.0.1`
 | `GET/POST /identity/v1alpha1/roles`, `/role-bindings`         | operator   | bearer         |
 | `GET/POST/DELETE /identity/v1alpha1/api-tokens`               | operator   | bearer         |
 | `GET/POST /identity/v1alpha1/identity-providers`              | operator   | bearer         |
-| `POST /identity/v1alpha1/enrollment-tokens`                   | operator   | bearer         |
+| `POST /identity/v1alpha1/enrollment-tokens`                   | operator   | bearer, step-up |
 | `GET/DELETE /identity/v1alpha1/enrollment-tokens`, `/{tokenId}` | operator | bearer         |
 | `GET /identity/v1alpha1/agents`, `/{agentId}`                 | operator   | bearer         |
 | `DELETE /identity/v1alpha1/agents/{agentId}`                  | operator   | bearer         |
 | `GET /identity/v1alpha1/agents/{agentId}`                     | internal   | mTLS, services |
 | `POST /identity/v1alpha1/agent-enrollments`                   | agent      | none           |
 | `POST /identity/v1alpha1/certificate-renewals`                | agent, internal | mTLS; SPIFFE ID copied from the peer |
-| `POST /identity/v1alpha1/revocations`                         | operator   | bearer         |
+| `POST /identity/v1alpha1/revocations`                         | operator   | bearer, step-up |
 | `POST /identity/v1alpha1/service-enrollment-tokens`           | internal   | mTLS, control node only |
 | `POST /identity/v1alpha1/service-enrollments`                 | internal   | none           |
+| `POST /identity/v1alpha1/service-enrollment-approvals`        | operator   | bearer, step-up |
 | `GET /identity/v1alpha1/cluster-issuers`                      | internal   | mTLS, control node only |
 | `GET/PUT /identity/v1alpha1/login-challenges/{challengeId}`   | internal   | mTLS, `sso` only |
 | `POST /identity/v1alpha1/password-verifications`, `/webauthn-assertions` | internal | mTLS, `sso` only |
@@ -135,9 +146,16 @@ revocation cache window rather than at certificate expiry.
 
 - **Access tokens** — JWT per [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), ES256, 10 minutes.
   `iss` is the issuer URL above; `aud` is `spiffe://<environment-id>/service/gateway`. Claims:
-  `sub` (principal ID), `client_id`, `scope`, `jti`, `amr`, `rackmarshal_tenant`, `rackmarshal_roles`.
-  The gateway verifies locally against JWKS and rejects any `iss` or `aud` naming another environment.
-- **ID tokens** — for third-party OIDC relying parties only; never accepted as bearer tokens.
+  `sub` (principal ID), `client_id`, `scope`, `jti`, `rackmarshal_tenant`, `rackmarshal_roles`, and the
+  authentication claims `auth_time`, `acr`, and `amr`
+  ([RFC 9068 §2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1)). `auth_time` is the user's
+  last authentication, kept unchanged across refreshes as for ID tokens
+  ([OIDC Core §12.2](https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse)); a token
+  exchanged from an API token carries the API token's creation time, so an API token stops passing
+  step-up (see Security) once it is older than `stepUp.maxAge`. The gateway verifies locally against
+  JWKS and rejects any `iss` or `aud` naming another environment.
+- **ID tokens** — for OIDC relying parties, including `portal` and `console`, which check `auth_time` and
+  `acr` on them for step-up (0016); never accepted as bearer tokens.
 - **Refresh tokens** — opaque, 256 random bits, stored as SHA-256, rotated on every use with reuse
   detection that revokes the family. Idle 8 hours, absolute 7 days (proposed).
 - **API tokens** — `rackmarshal_pat_<environment-id>_<secret>`, stored as SHA-256 (256-bit secrets need
@@ -155,10 +173,14 @@ Format (answers 0003's open question), parseable offline:
 SHA-256 in unpadded lowercase base32 (52 characters) and `<secret>` is 256 bits. Only the secret's
 SHA-256 is stored.
 
-| Kind    | Bound to                                    | TTL default / max | Created by                |
-|---------|---------------------------------------------|-------------------|---------------------------|
-| agent   | environment, tenant, optional host labels   | 1h / 24h          | operator via `cli`  |
-| service | environment, `service/<repository>`, host, CSR public key | 15m / 1h | control node certificate |
+| Kind    | Bound to                                                  | TTL default / max | Created by                   |
+|---------|-----------------------------------------------------------|-------------------|------------------------------|
+| agent   | environment, tenant, optional host labels                 | 1h / 24h          | `cli`, `console`, `portal`   |
+| service | environment, `service/<repository>`, host, CSR public key | 15m / 1h          | control node certificate     |
+
+Operators create agent tokens through `cli` or `console`; tenant administrators create them through
+`portal`, for their own tenant only. Every agent token creation requires step-up (see Security),
+whichever client requests it.
 
 Redemption is one
 `UPDATE … SET used_at = now() WHERE id = $1 AND used_at IS NULL AND expires_at > now() RETURNING …`
@@ -196,7 +218,11 @@ clusters:
       # discovery: { caFile: /etc/rackmarshal-identity/clusters/east-1-ca.pem, refresh: 1h }
     serviceAccounts:
       - { namespace: rackmarshal-qa-east, name: rackmarshal-inventory, service: inventory }
+      - { namespace: rackmarshal-qa-east-gateway, name: rackmarshal-gateway, service: gateway }
 ```
+
+`gateway` runs in its own namespace ([0005](0005-infrastructure.md)), so its service account is mapped
+from that namespace, and no account in the shared service namespace can obtain its identity.
 
 **Verification** — offline; `identity` never calls a cluster's API server:
 
@@ -305,7 +331,9 @@ PostgreSQL through the starter's pgx, bun, and goose migrations. Every tenant-sc
 | `tenant_memberships`, `role_bindings` | `principal_id`, `tenant_id`, `role`                                   |
 | `identity_providers`           | `id`, `tenant_id`, `protocol`, `metadata`, `claim_mappings`, `jit_enabled`   |
 | `federated_identities`         | `provider_id`, `external_subject`, `principal_id` (unique pair)              |
-| `sessions`, `login_challenges` | `id`, `principal_id`, `amr`, `expires_at`, `revoked_at`                      |
+| `sessions`                     | `id`, `principal_id`, `amr`, `expires_at`, `revoked_at`                      |
+| `login_challenges`             | `id`, `principal_id`, `amr`, `binding_hash`, `verifier_hash`, `expires_at`   |
+| `saml_assertion_ids`           | `provider_id`, `assertion_id` (unique pair), `not_on_or_after`               |
 | `refresh_tokens`, `api_tokens` | `token_hash`, `family_id`, `principal_id`, `expires_at`, `revoked_at`        |
 | `enrollment_tokens`            | `id`, `kind`, `secret_hash`, `bindings`, `expires_at`, `used_at`             |
 | `service_account_enrollments`  | `cluster_id`, `token_hash`, `pod_uid`, `key_sha256`, `serial`, `expires_at`  |
@@ -391,6 +419,20 @@ from a different replica validates it the same way.
 - **Brute force** — failed password, WebAuthn, and user-code attempts are counted per account and per
   source in PostgreSQL, with exponential delays rather than hard lockouts that attackers could abuse.
 - **No enumeration** — verification responses do not distinguish unknown accounts from bad passwords.
+- **Step-up** — the trust-creating operations of [0018](0018-console.md)'s step-up table that `identity`
+  serves — enrollment-token creation, service-enrollment approvals, revocations, and signing-key and CA
+  key operations — are refused unless the access token's `auth_time` is within `stepUp.maxAge`
+  (5 minutes), whatever the client and in every tier. The refusal is `401` with
+  `WWW-Authenticate: Bearer error="insufficient_user_authentication", max_age="300"`
+  ([RFC 9470](https://www.rfc-editor.org/rfc/rfc9470)), telling the client to re-authenticate with
+  `prompt=login` and `max_age=300` ([OIDC Core §3.1.2.1](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)).
+  Relying parties such as `portal` and `console` also check `auth_time` and `acr` in the ID token
+  ([OIDC Core §2](https://openid.net/specs/openid-connect-core-1_0.html#IDToken)), but this check is the
+  one that holds when a client skips its own.
+- **SAML replay** — `sso` passes each external assertion's ID and `NotOnOrAfter` with
+  `federated-logins`, and `identity` inserts them into `saml_assertion_ids` under its unique constraint in
+  the same transaction, keeping the row until `NotOnOrAfter`. An assertion replayed to any `sso` replica
+  therefore fails.
 - **Service account tokens** — accepted only in the request body, never logged or stored; only the
   SHA-256 of `iss` and `jti` is kept. Pinned JWKS files hold public keys only.
 - **Fuzzing** — token, service account token, CSR, and SAML request parsers.
@@ -400,7 +442,7 @@ from a different replica validates it the same way.
 - `environment.id` and `caBundle` are required (CONVENTIONS); startup fails if the intermediate does
   not chain to the bundle or does not carry the environment's trust domain.
 - `Hardened()` tiers disable the OpenAPI UI and require WebAuthn for platform administrators;
-  `production` refuses the `kek-sealed` backends outright (see Security).
+  `production` refuses the `kek-sealed` backends outright (see Security). Step-up applies in every tier.
 - `development` may use SoftHSM through the same `pkcs11` backend.
 
 ### Logging & telemetry
@@ -431,6 +473,7 @@ Prefix `RACKMARSHAL_IDENTITY_`, plus the starter's `server` and `database` block
 | `ca.intermediateCertFile`          | `RACKMARSHAL_IDENTITY_CA_INTERMEDIATE_CERT_FILE`  | none — required          |
 | `tokens.accessTtl`                 | `RACKMARSHAL_IDENTITY_TOKENS_ACCESS_TTL`          | `10m`                    |
 | `tokens.signingKeyRotation`        | `RACKMARSHAL_IDENTITY_TOKENS_SIGNING_KEY_ROTATION`| `720h`                   |
+| `stepUp.maxAge`                    | `RACKMARSHAL_IDENTITY_STEP_UP_MAX_AGE`            | `5m`                     |
 | `enrollment.agentDefaultTtl`       | `RACKMARSHAL_IDENTITY_ENROLLMENT_AGENT_DEFAULT_TTL` | `1h` (max `24h`)       |
 | `kubernetes.clusterIssuersFile`    | `RACKMARSHAL_IDENTITY_KUBERNETES_CLUSTER_ISSUERS_FILE` | none (path disabled) |
 | `kubernetes.maxTokenAge`           | `RACKMARSHAL_IDENTITY_KUBERNETES_MAX_TOKEN_AGE`   | `10m` (max `15m`)        |
@@ -473,6 +516,10 @@ than one service.
   and expired tokens fail. Service account tokens from kind and synthetic issuers fail with a wrong
   issuer, audience, algorithm, or key, an age over `maxTokenAge`, an unmapped or other service's
   account, a retired cluster, or a replay with a different CSR key.
+- **Login and step-up** — `/authorize` refuses a code for a missing or mismatched login-binding cookie
+  and for a reused or expired verifier; a SAML assertion ID is accepted once across replicas; every
+  trust-creating operation refuses an access token whose `auth_time` is older than `stepUp.maxAge`,
+  including one refreshed or exchanged from an API token.
 - **Data** — forward-only migrations applied on PostgreSQL in CI ([0005](0005-infrastructure.md)); a
   test asserts every tenant-scoped query filters by `tenant_id`.
 
@@ -522,14 +569,15 @@ than one service.
   [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009), [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517),
   [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252), [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414),
   [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628), [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693),
-  [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700).
+  [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), [RFC 9470](https://www.rfc-editor.org/rfc/rfc9470),
+  [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700).
 - [OpenID Connect Core](https://openid.net/specs/openid-connect-core-1_0.html) and
   [Discovery](https://openid.net/specs/openid-connect-discovery-1_0.html);
   [SAML 2.0](https://docs.oasis-open.org/security/saml/v2.0/).
 - [RFC 5280](https://www.rfc-editor.org/rfc/rfc5280), [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960),
   [RFC 2986](https://www.rfc-editor.org/rfc/rfc2986).
 - [Ory login and consent flow](https://www.ory.com/docs/oauth2-oidc/custom-login-consent/flow) —
-  `login_challenge` delegation model.
+  `login_challenge` delegation model; [MDN cookie prefixes](https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies#cookie_prefixes).
 - [go-jose](https://github.com/go-jose/go-jose), [miekg/pkcs11](https://github.com/miekg/pkcs11),
   [crewjam/saml](https://github.com/crewjam/saml) and its
   [security advisories](https://github.com/crewjam/saml/security/advisories),

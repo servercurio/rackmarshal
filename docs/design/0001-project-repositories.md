@@ -223,8 +223,10 @@ Certificate lifetime and revocation:
   with OCSP and caches the responses, falls back to the latest CRL when the responder is unreachable,
   and rejects the agent when neither is available within the cache window (fail closed).
 - **Cache window** — the gateway caches OCSP responses and the CRL until their `nextUpdate` time, which
-  `identity` sets to 1 hour for OCSP and 24 hours for the CRL. A revoked agent is normally cut off
-  within an hour, and within 24 hours if the OCSP responder is unavailable.
+  `identity` sets to 1 hour for OCSP and 24 hours for the CRL. `gateway` re-checks the cached status on
+  every request and closes each agent connection after at most an hour (jittered), forcing a new
+  handshake and revocation check ([0008](0008-gateway.md#agent-ingress-and-revocation)), so a revoked
+  agent is normally cut off within an hour, and within 24 hours if the OCSP responder is unavailable.
 
 ### Agent plugin ecosystem
 
@@ -251,11 +253,14 @@ Two kinds of plugins are trusted differently:
   with its environment service certificate. Before install, the downloaded digest must match the pin and
   the core `sigstore` validator must verify the release's Sigstore bundle against that identity, using a
   trusted root verified through [TUF](https://theupdateframework.github.io/specification/latest/). The
-  unprivileged agent process refreshes TUF metadata through the validator, with egress only to
-  Sigstore's TUF repository or a configured mirror; the network-free privileged executor verifies it.
+  unprivileged agent process asks the privileged executor to launch the validator in `refresh` mode,
+  whose only egress is to Sigstore's TUF repository or a configured mirror, through the agent's egress
+  proxy; the executor, which has no network beyond localhost, verifies the metadata
+  ([0012](0012-agent.md)).
 
-Before every launch, the agent re-checks the core signature or bundle pin, then pins the binary's
-SHA-256 through go-plugin's
+The privileged executor launches every plugin process. Before every launch, in every tier, it re-checks
+the core signature, or the bundle pin and its Sigstore verification, so no unsigned local plugin ever
+runs; it then pins the binary's SHA-256 through go-plugin's
 [`SecureConfig`](https://pkg.go.dev/github.com/hashicorp/go-plugin#SecureConfig). The agent binary links
 no Sigstore verifier: sigstore-go v1.3.0's verifier compiles in 71 modules, and the validator plugin that
 runs it links 79 with go-plugin (measured 2026-09-15). A plugin carries no environment configuration of
@@ -390,12 +395,17 @@ deployment:
     token from `identity` and delivers it through Ansible.
   - **Kubernetes** — an enrollment init container presents the pod's short-lived, audience-bound
     [projected service account token](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection).
-    `identity` verifies it offline against the cluster's service account issuer
-    ([issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery)), which the
-    environment-creation ceremony registers together with a mapping from service accounts to Rackmarshal
-    service identities. Only the mapped service account can obtain, for example,
+    `identity` verifies it offline, without calling the cluster's API server. The environment-creation
+    ceremony registers the cluster's service account issuer and its JWKS
+    ([issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery)),
+    which `identity` caches, together with a mapping from service accounts to Rackmarshal service
+    identities. The token's signature must verify against that JWKS, and `aud` (naming `identity` in
+    this environment) and `exp` are required. Only the mapped service account can obtain, for example,
     `spiffe://<environment-id>/service/inventory`, and pods enroll on start, scale-out, and
-    rescheduling without an Ansible run.
+    rescheduling without an Ansible run. Offline verification gives up the check a
+    [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/)
+    makes that the bound pod still exists; Rackmarshal accepts that loss, so a deleted pod's certificate
+    stays valid until revoked or expired ([0006](0006-identity.md#kubernetes-service-account-enrollment)).
 
   Service certificates last 7 days and renew automatically at two-thirds of their lifetime, with the
   same OCSP and CRL checks as agent certificates.
@@ -510,8 +520,9 @@ Answers to this document's earlier open questions (2026-09-14 to 2026-09-15). Th
 - **Service certificate bootstrap** — An environment-creation key ceremony signs `identity`'s
   intermediate CA and the control node's certificate from the offline root. Services on container and
   operating-system targets enroll with single-use tokens delivered by Ansible; Kubernetes pods enroll
-  with projected service account tokens verified against the registered cluster issuer and service
-  account mapping. Service certificates last 7 days and renew automatically.
+  with projected service account tokens verified offline against the registered cluster issuer, its
+  cached JWKS, and the service account mapping, accepting the loss of `TokenReview`'s pod-binding check.
+  Service certificates last 7 days and renew automatically.
 - **Deployment targets** — Kubernetes (Helm charts), containers (Podman Quadlet and Docker Compose), and
   direct installation on Enterprise Linux and Debian/Ubuntu LTS (signed deb and rpm packages with
   systemd) or Windows Server (installer-based services), all deployed by the same Ansible and OPA
@@ -527,10 +538,13 @@ Answers to this document's earlier open questions (2026-09-14 to 2026-09-15). Th
   identities at import and pins the verified SHA-256 digests, with the publisher identity, in the
   directive bundles it signs; a host installs one only when the digest matches the pin and the core
   validator verifies the Sigstore bundle against that identity with a TUF-verified trusted root. TUF
-  metadata is refreshed by the unprivileged agent process with egress only to Sigstore's TUF repository
-  or a mirror, and verified in the network-free executor. Every launch pins the SHA-256 through go-plugin
-  `SecureConfig`. The agent binary links no Sigstore verifier: sigstore-go v1.3.0's verifier compiles in
-  71 modules, confined to the validator plugin (79 with go-plugin; measured 2026-09-15).
+  metadata is fetched by the validator in `refresh` mode, which the privileged executor launches at the
+  unprivileged agent process's request, with egress only to Sigstore's TUF repository or a mirror through
+  the agent's egress proxy, and verified in the executor, which has no network beyond localhost. The
+  executor launches every plugin; each launch, in every tier, needs a core signature or a bundle pin
+  with Sigstore verification — there are no unsigned local plugins — and pins the SHA-256 through
+  go-plugin `SecureConfig`. The agent binary links no Sigstore verifier: sigstore-go v1.3.0's verifier
+  compiles in 71 modules, confined to the validator plugin (79 with go-plugin; measured 2026-09-15).
 - **License headers** — Every repository carries an Apache-2.0 `LICENSE` and identifier-only SPDX
   headers in every file, enforced by license-eye in pull-request and main-branch checks, with an explicit
   ignore list for files that cannot hold a comment. See
@@ -562,6 +576,8 @@ None at present. Answered questions are recorded under
 - [Projected service account tokens](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection)
   and [service account issuer discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery) —
   Kubernetes pod credentials used for service enrollment.
+- [`TokenReview`](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/)
+  — the API-server token check, including pod binding, that offline verification forgoes.
 - [Tengo](https://github.com/d5/tengo) — embeddable Go scripting language used in desired-state
   directives by `provisioner` and `agent`.
 - [zerolog](https://github.com/rs/zerolog) — structured logger used by the `go-*-starter` logging

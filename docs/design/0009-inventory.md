@@ -180,7 +180,10 @@ agent ──mTLS 1.3──► gateway (agent ingress)
 
 - **Reads** — `provisioner` selects endpoints with `labelSelector` through `internal` list and get
   operations, called service to service over mutual TLS, never through the gateway.
-- **Watches** — it long-polls `GET /endpoint-events` with a durable cursor. Events are
+- **Watches** — it long-polls `GET /endpoint-events` with a durable cursor per tenant. The stream is
+  tenant-scoped like every other read: the provisioner names the tenant with `X-Rackmarshal-Tenant-Id`,
+  and row-level security limits `endpoint_events` to that tenant's rows. It follows the tenants that hold
+  desired-state documents, since a tenant with none has nothing to reconcile. Events are
   `endpoint.created`, `endpoint.declared-updated`, `endpoint.facts-updated`, `endpoint.retired`, and
   `class.updated`, each carrying `endpointId` and `resourceVersion`, not full documents. PostgreSQL
   `LISTEN`/`NOTIFY` wakes long-polls; the table is authoritative.
@@ -263,12 +266,14 @@ CREATE TABLE endpoint_events (
   sequence bigserial PRIMARY KEY, tenant_id text NOT NULL, endpoint_id text,
   type text NOT NULL, resource_version bigint, occurred_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX endpoint_events_tenant ON endpoint_events (tenant_id, sequence);
 
 ALTER TABLE endpoints ENABLE ROW LEVEL SECURITY;
 ALTER TABLE endpoints FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON endpoints
   USING (tenant_id = current_setting('rackmarshal.tenant_id', true));
--- same ENABLE/FORCE/POLICY for revisions and relationships; classes also allow tenant_id IS NULL on read
+-- same ENABLE/FORCE/POLICY for revisions, relationships, events, and tenant_retention (below);
+-- classes also allow tenant_id IS NULL on read. No table is exempt.
 
 -- +goose Down
 DROP TABLE endpoint_events, endpoint_relationships, endpoint_revisions, endpoints, endpoint_classes;
@@ -281,6 +286,23 @@ DROP TABLE endpoint_events, endpoint_relationships, endpoint_revisions, endpoint
   tenant's rows. The sweep already has to iterate tenants and set `rackmarshal.tenant_id` for each — which
   is precisely the context needed to read that tenant's policy. Per-tenant retention is the natural
   shape here, not added machinery.
+
+  The sweep's one cross-tenant read is the list of tenants to iterate, and it goes through a narrowly
+  granted `SECURITY DEFINER` function that returns tenant IDs and nothing else. The function is owned by
+  a dedicated role that has `BYPASSRLS` and no other grants, pins its `search_path`, and is executable
+  only by the runtime role, as PostgreSQL's guidance on
+  [writing `SECURITY DEFINER` functions safely](https://www.postgresql.org/docs/current/sql-createfunction.html#SQL-CREATEFUNCTION-SECURITY)
+  recommends. Every row the sweep then reads or deletes goes through the tenant's own policy.
+
+  ```sql
+  CREATE FUNCTION retention_tenant_ids() RETURNS SETOF text
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+    AS $$ SELECT tenant_id FROM public.endpoints
+          UNION SELECT tenant_id FROM public.endpoint_events $$;
+  REVOKE ALL ON FUNCTION retention_tenant_ids() FROM PUBLIC;
+  GRANT EXECUTE ON FUNCTION retention_tenant_ids() TO inventory_runtime;
+  -- owner: inventory_tenant_lister (BYPASSRLS, SELECT on those two tables only)
+  ```
 
   ```sql
   CREATE TABLE tenant_retention (
@@ -322,8 +344,9 @@ distributes across replicas by whichever one the gateway routes to.
 - **Tenant isolation, twice.** Every query runs in a transaction that begins
   `SELECT set_config('rackmarshal.tenant_id', $1, true)` from the principal. Row-level security then filters
   rows even if a query forgets its `WHERE`. `FORCE ROW LEVEL SECURITY` applies the policy to the table
-  owner too. The runtime role owns no tables and lacks `BYPASSRLS`; goose runs as a separate migration
-  role.
+  owner too, on every table including `endpoint_events` and `tenant_retention`. The runtime role owns
+  no tables and lacks `BYPASSRLS`; goose runs as a separate migration role. Its only cross-tenant read
+  is the retention sweep's tenant-ID function (Data & storage).
 - **Principal trust.** `X-Rackmarshal-Principal` is accepted only from
   `spiffe://<environment-id>/service/gateway`, and `X-Rackmarshal-Tenant-Id` only from `internalCallers`
   (default `provisioner`). Agents can act only on their own endpoint.
@@ -391,7 +414,8 @@ The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces 
 - **Database tests** against a real PostgreSQL started by the Taskfile (container), with every migration
   applied up and down.
 - **Isolation tests** — for every repository method, tenant B cannot read or change tenant A's rows, even
-  through a query deliberately missing `WHERE tenant_id`.
+  through a query deliberately missing `WHERE tenant_id`; this covers `endpoint_events` and
+  `tenant_retention`, and `GET /endpoint-events` for one tenant never returns another's events.
 - **Ingestion** — replayed `reportId`, out-of-order `sequence`, unchanged digest, oversized plugin data,
   auto-registration name collisions, and a principal header from a non-gateway peer.
 - **Selectors** — a parser fuzz test plus table tests comparing SQL results with an in-memory evaluator.
@@ -449,6 +473,8 @@ The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces 
   [santhosh-tekuri/jsonschema](https://github.com/santhosh-tekuri/jsonschema).
 - [PostgreSQL row security policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) —
   `FORCE ROW LEVEL SECURITY` and owner bypass.
+- [PostgreSQL `CREATE FUNCTION`](https://www.postgresql.org/docs/current/sql-createfunction.html#SQL-CREATEFUNCTION-SECURITY)
+  — writing `SECURITY DEFINER` functions safely.
 - [PostgreSQL JSON types, jsonb indexing](https://www.postgresql.org/docs/current/datatype-json.html#JSON-INDEXING)
   — `jsonb_ops` versus `jsonb_path_ops`.
 - [PostgreSQL `LISTEN`](https://www.postgresql.org/docs/current/sql-listen.html) and

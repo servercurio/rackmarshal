@@ -119,7 +119,7 @@ agent-plugins/
   unverified.
 - **`sysfacts`** — OS release, kernel, CPU, memory, filesystems, interfaces, and uptime. Linux first,
   read from `/proc`, `/sys`, and `/etc/os-release` with `golang.org/x/sys/unix`, which gRPC already
-  links. No facts that require root.
+  links. No facts that require root; it runs as its own `rackmarshal-plugin-sysfacts` user (0012).
 - **`packages`** — `Package` (`name`, optional `version`, `state`) through `apt-get`/`dpkg-query` and
   `dnf`/`rpm`. Arguments go in arrays after `--`, and names must match the schema pattern. Repository
   configuration is out of scope at first.
@@ -183,8 +183,11 @@ Plugins keep no state. Installed binaries on hosts belong to 0012.
   are explicit.
 - **Parsers** — `os-release`, `dpkg-query`, `rpm`, and `systemctl show` output are fuzzed against golden
   fixtures, and `sigstore` fuzzes bundle and TUF metadata inputs.
-- **Validator** — no root, exec, or writes. Network only in `refresh` mode, to its granted TUF host; in
-  `verify` mode any network use is a bug: the agent gives it no proxy, so the attempt fails (0012).
+- **Validator** — no root, exec, or writes. The executor launches it in both modes as its own
+  `rackmarshal-plugin-sigstore` user (0012). Network only in `refresh` mode, to its granted TUF host
+  through the agent's egress proxy; in `verify` mode any network use is a bug, and the attempt fails
+  because the executor's always-on lockdown (`IPAddressDeny=any` with only `localhost` allowed) confines
+  every plugin it launches to loopback, where no proxy grant exists for that process (0012).
 - **Supply chain** — SHA-pinned actions and `harden-runner`, as in the starter. `id-token: write` only
   in the release job. `CODEOWNERS` on `.github/workflows/`, since whoever changes the signing workflow
   controls what the identity signs. `govulncheck` and CodeQL.

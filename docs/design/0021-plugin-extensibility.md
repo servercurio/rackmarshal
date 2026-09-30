@@ -375,6 +375,18 @@ and is rebuilt on a pin change like any other bundle input.
 - **Process isolation.** A provisioner service runs as its own user with no database credentials and no
   network grant by default, reachable only over the socket the host created. A plugin that ships only a
   bundle introduces no process at all, which is why the bundle is the mandatory part and the service is not.
+- **The sidecar boundary is weaker.** Containers in a Kubernetes pod share its network namespace
+  ([pods](https://kubernetes.io/docs/concepts/workloads/pods/#pod-networking)), as does a `podman` or
+  `docker` sibling in the same pod or network namespace, so a sidecar can reach everything the
+  provisioner can, including its loopback listeners and the database's address; "no network grant" is
+  then a property of the plugin, not a barrier. On Kubernetes the pod keeps
+  `automountServiceAccountToken: false` and mounts the projected token with audience
+  `spiffe://<environment-id>/service/identity` only in the enrollment init container
+  ([0005](0005-infrastructure.md)), and the sidecar mounts only the socket `emptyDir`, never the key
+  volume. A `NetworkPolicy`
+  ([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)) can
+  narrow what the whole pod reaches but applies per pod, so it cannot separate the sidecar from the
+  provisioner; that takes a separate pod, which trades the local socket for a network listener.
 - **No plugin-to-plugin path.** The halves never connect; results travel as a payload over the existing
   agent ingress. A compromised agent half can therefore send the control plane nothing but bytes that
   the gateway already authenticated, rate-limited, and size-capped.
@@ -392,10 +404,11 @@ and is rebuilt on a pin change like any other bundle input.
 | Declared kind with no schema in the bundle | refused | refused | refused | refused |
 | Plugin policy compile error | deny | deny | deny | deny |
 | Plugin `print` in Rego | off | off | off | on |
-| Local unsigned plugin half | refused | refused | allowed | allowed |
 
 Verification has no last-resort override in any tier, matching 0011: an unverifiable plugin is the case
-the chain exists to stop.
+the chain exists to stop. There is no local unsigned plugin half in any tier either; every launch needs a
+core signature, or a pin plus Sigstore verification (0012). Plugin authors test unreleased builds with
+`plugin-starter`'s `fakeagent` and `fakeprovisioner` ([0015](0015-plugin-starter.md)).
 
 ### Logging & telemetry
 
@@ -441,7 +454,9 @@ out at build time rather than at import.
 - **Proposals** — `Propose` output passes through admission and is denied by the tenant's policy when the
   tenant denies it, and by the plugin's own policy when the plugin does.
 - **Process model** — the plugin host recovers from a crashed half, and a half that never starts fails the
-  plugin rather than the service; a half that attempts to bind a network port is refused by its sandbox.
+  plugin rather than the service; a half that attempts to bind a network port is refused by its sandbox
+  on the `package` and `windows` targets (a sidecar or sibling container shares its pod's network
+  namespace; see Security).
 - **Determinism** — the same documents, facts, and plugin pins produce the same bundle digest with plugin
   policy in the evaluation set.
 
