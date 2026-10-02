@@ -132,7 +132,8 @@ go run ./tools/fakeagent -plugin bin/rackmarshal-plugin-example-linux-amd64 \
 `fakeagent` hashes and launches the binary the way `host.Launch` does. It sends the `development`
 environment from `testdata/environment.yaml` in `Init` and prints plans, results, and log lines. It
 validates every `result_json` against the bundle's result schema so an author sees the same rejection
-the agent would produce.
+the agent would produce. The harnesses are how an author runs an unreleased build: a real agent launches
+no unsigned or unpinned plugin in any tier ([0012](0012-agent.md)).
 
 `fakeprovisioner` is the bundle's counterpart: it loads `provisioner/`, compiles the policy, and runs the
 admission and dispatch phases over a document, so an author can see a scoped `deny` fire without standing

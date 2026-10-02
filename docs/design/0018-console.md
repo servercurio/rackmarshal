@@ -10,9 +10,9 @@
 - **Summary:** `console` is the platform administrator's surface: tenants, identity and federation,
   the environment's certificate authority and key backend, agent enrollment, plugin publishers, and the
   audit chain. It is separated from `portal` because it holds the controls that create trust —
-  issuing enrollment tokens and approving service enrollments — and those should not share a process with
-  the tenant-facing application. Every action here is audited, and the ones that create trust require a
-  fresh authentication.
+  issuing enrollment tokens for any tenant and approving service enrollments — and those should not share
+  a process with the tenant-facing application. Every action here is audited, and the ones that create
+  trust require a fresh authentication.
 
 > An initial draft. The stack, session model, and configuration are fixed by
 > [0016](0016-web-ui-architecture.md); the visual system is [0019](0019-brand-identity.md). Conventions
@@ -43,8 +43,8 @@ wrong, and acts — which is the shape a page serves better than a command.
 - Tenant-level work — endpoints, directive sets, plans, and drift are [0017](0017-portal.md).
 - Replacing `cli` for automation, break-glass, or air-gapped operation. The console is an
   additional surface, never the only path to an operation.
-- Holding any private key or performing any cryptographic operation itself. Signing stays in
-  `identity`'s HSM or KMS backend.
+- Holding any signing key. Signing stays in `identity`'s HSM or KMS backend; the console's only key use
+  is wrapping session data keys under the dedicated session-encryption key 0016 specifies.
 - A metrics or logging product. Telemetry goes to the OpenTelemetry collector; the console links out.
 
 ## Proposal
@@ -146,8 +146,13 @@ suspending require typing the environment name, as in `cli` and `portal`. Beyond
 | Change the current core plugin key  | yes     | no              | environment  |
 | Suspend a tenant                    | no      | no              | environment  |
 
-Step-up requests `prompt=login` with `max_age=300` against `identity`, which in hardened tiers
-lands on a WebAuthn prompt because 0006 already requires WebAuthn for platform administrators there.
+Step-up requests `prompt=login` with `max_age=300` against `identity`, and the console checks the
+returned ID token's `auth_time` and `acr` before retrying, as 0016 specifies. In hardened tiers it lands
+on a WebAuthn prompt because 0006 already requires WebAuthn for platform administrators there.
+`identity` refuses the operations it owns — enrollment-token issuance, service-enrollment approvals,
+revocation, and signing-key rotation — when the access token's `auth_time` is older than its
+`stepUp.maxAge`, whatever the client and in every tier, so the console's own check exists only to
+prompt early.
 
 ### Dependencies
 
@@ -171,10 +176,11 @@ assumed:
 - **No standing authority.** The console holds the signed-in administrator's token and nothing more. It
   has no service account with rights beyond a user, so compromising the process yields whatever the
   currently signed-in sessions hold, not the deployment.
-- **No private keys, ever.** Every signing operation happens in `identity`'s HSM or KMS backend.
+- **No signing keys, ever.** Every signing operation happens in `identity`'s HSM or KMS backend.
   The console renders key metadata — `kid`, backend, state — and never key material, sealed or otherwise.
-- **Step-up on trust creation**, as tabulated above, so a stolen session cookie alone cannot issue an
-  enrollment token.
+- **Step-up on trust creation**, as tabulated above and enforced by `identity` from the access token's
+  `auth_time`, so a stolen session cookie alone cannot issue an enrollment token and a console defect
+  cannot skip the check.
 - **Two-person enforcement server-side.** The approver-is-not-requester check is enforced by
   `identity`; the console refuses early only to give a readable message. A console defect cannot
   defeat the rule.
@@ -189,8 +195,8 @@ assumed:
 The environment name, tier, and ID appear in the masthead and the `<title>`, as in 0017. The console adds
 one behaviour: because it administers the environment itself, it displays the environment ID in full
 rather than truncated, and compares it against the ID in the session on every request, destroying the
-session on a mismatch. `Hardened()` tiers enforce the step-up table above; in `development` the step-up
-is still required for the approval queue, so the two-person flow is exercised where it is being built.
+session on a mismatch. The step-up table above applies in every tier, `development` included, because
+`identity` enforces it; the two-person flow is therefore exercised where it is being built.
 
 ### Logging & telemetry
 

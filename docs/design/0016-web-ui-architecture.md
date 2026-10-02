@@ -54,18 +54,19 @@ This document adds the surfaces, fixes the stack they share, and answers both qu
 
 ### Responsibilities
 
-| Surface         | Audience                        | Authentication                | Repository       |
-|-----------------|---------------------------------|-------------------------------|------------------|
-| Login site      | Anonymous, pre-authentication   | Renders `identity` challenges | `sso` (0007) |
-| `portal`  | Tenant users and tenant admins  | OIDC relying party            | New              |
-| `console` | Platform administrators         | OIDC relying party, step-up   | New              |
+| Surface    | Audience                        | Authentication                | Repository   |
+|------------|---------------------------------|-------------------------------|--------------|
+| Login site | Anonymous, pre-authentication   | Renders `identity` challenges | `sso` (0007) |
+| `portal`   | Tenant users and tenant admins  | OIDC relying party, step-up   | New          |
+| `console`  | Platform administrators         | OIDC relying party, step-up   | New          |
 
 The split follows 0007's own reasoning. `sso` is hardened as the only surface anonymous browsers
 reach; putting authenticated administration in the same process would undo that. `portal` and
 `console` are separated from each other for the same reason at a different level: the console
 administers the whole deployment — tenants, environments, certificate authorities, agent enrollment —
 while the portal serves one tenant's users. A defect in the tenant-facing application should not sit in
-the same address space as the controls that issue enrollment tokens.
+the same address space as the controls that issue enrollment tokens for any tenant and approve service
+enrollments.
 
 ### Interfaces
 
@@ -151,11 +152,12 @@ authorization code flow the portals use:
    browser opens.
 3. `sso` renders login as it does for any other client (0007). Nothing about the flow is
    CLI-specific.
-4. The callback lands on the loopback listener, which checks `state`, exchanges the code with the PKCE
-   verifier, stores credentials as 0010 already specifies, and renders a plain confirmation page served
-   from the CLI binary itself.
-5. The listener stops on success, on error, or after 300 seconds, whichever comes first, and accepts
-   exactly one request.
+4. The listener serves only `GET /callback`; any other request, and any callback whose `state` does not
+   match, is answered with an error and otherwise ignored. On the first callback whose `state` matches,
+   it exchanges the code with the PKCE verifier, stores credentials as 0010 already specifies, and
+   renders a plain confirmation page served from the CLI binary itself.
+5. The listener stops after that first matching callback, whether it carries a code or an error, or
+   after 300 seconds, whichever comes first.
 
 Loopback redirection is the method [RFC 8252 §7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3)
 prescribes for native applications; it requires the authorization server to accept an arbitrary port on
@@ -213,9 +215,14 @@ in-process, which is permitted only when `environment.tier` is `development` and
 otherwise. The default has to be the replica-safe one. An in-process store does not fail loudly under a
 second replica — it fails as intermittent logouts, once, for whichever users land on the other pod, and
 that is a poor thing to discover in production. PostgreSQL reuses the database conventions 0006 and
-0009 already set. Tokens in the store are encrypted with a key from the same HSM or KMS backend 0006 uses, so
-a database backup does not contain usable bearer tokens. Sessions are deleted on logout, on refresh
-failure, and when the environment ID of the session does not match the process's own.
+0009 already set. Tokens in the store are encrypted by
+[envelope encryption](https://docs.aws.amazon.com/kms/latest/developerguide/kms-cryptography.html#enveloping):
+each session's tokens under a random data key, and that data key wrapped by a KMS or HSM key dedicated to
+the surface (`session.encryptionKey`). The portal and the console each have their own key, and neither
+ever uses `identity`'s signing backend, so a surface holds no signing key, a database backup does not
+contain usable bearer tokens, and a compromised portal cannot unwrap console sessions. Sessions are
+deleted on logout, on refresh failure, and when the environment ID of the session does not match the
+process's own.
 
 ### Security
 
@@ -234,10 +241,19 @@ failure, and when the environment ID of the session does not match the process's
   parameter, matching the rule CONVENTIONS sets for the API. A request whose target resource resolves to
   another tenant fails as `404`, not `403`, so the portal does not confirm the existence of another
   tenant's objects.
-- **Step-up for the console** — administrative actions that create trust (issuing an enrollment token,
-  approving a service enrollment, rotating a key) require a fresh authentication within the last five
-  minutes, requested through `prompt=login` and `max_age=300`. 0006 already requires WebAuthn for
-  platform administrators in hardened tiers, so the step-up lands on a WebAuthn prompt there.
+- **Step-up** — actions that create trust (issuing an enrollment token, approving a service enrollment,
+  CA and signing-key operations) require a fresh authentication within the last five minutes, in every
+  tier and on both surfaces. `identity` enforces it, not the surface: access tokens carry `auth_time`
+  and `acr` ([RFC 9068 §2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1)), and `identity`
+  refuses a trust-creating operation whose token's `auth_time` is older than its `stepUp.maxAge`
+  (default `5m`, 0006), with an error that tells the client to re-authenticate. The surface requests
+  the fresh login with `prompt=login` and `max_age=300`
+  ([OIDC Core §3.1.2.1](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)) and checks
+  the returned ID token's `auth_time` and `acr`
+  ([OIDC Core §2](https://openid.net/specs/openid-connect-core-1_0.html#IDToken)) before retrying, so a
+  surface defect can skip only its own readable pre-check, never the rule. 0006 already requires
+  WebAuthn for platform administrators in hardened tiers, so the step-up lands on a WebAuthn prompt
+  there.
 - **No token in a URL** — the code exchange happens server-side; `state` and `code` appear only on the
   redirect, which is not logged with its query string.
 
@@ -249,8 +265,8 @@ environment a destructive control belongs to.
 
 - Every authenticated page renders the environment name and tier in the masthead, using the tier ramp in
   0019, and the `<title>` carries it too so that a browser tab shows it.
-- `Hardened()` tiers shorten the idle session to 30 minutes, require the step-up above, and disable any
-  development affordance.
+- `Hardened()` tiers shorten the idle session to 30 minutes and disable any development affordance. The
+  step-up above applies in every tier, because `identity` enforces it.
 - A session whose recorded environment ID no longer matches the process's own is destroyed rather than
   migrated, which is the browser-side counterpart to the mismatch rules 0012 and 0013 apply to agents
   and plugins.
@@ -268,15 +284,16 @@ table in the portal resolves to the `inventory` query behind it.
 Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS rule, with the shared child keys
 `logging`, `telemetry`, `environment`, and `gateway`.
 
-| YAML                       | Variable                              | Default                       |
-|----------------------------|---------------------------------------|-------------------------------|
-| `server.httpsPort`         | `<PREFIX>_SERVER_HTTPS_PORT`          | `8443`                        |
-| `session.backend`          | `<PREFIX>_SESSION_BACKEND`            | `postgres` (`memory` dev only)|
-| `session.idleTimeout`      | `<PREFIX>_SESSION_IDLE_TIMEOUT`       | `30m`                         |
-| `session.absoluteTimeout`  | `<PREFIX>_SESSION_ABSOLUTE_TIMEOUT`   | `8h`                          |
-| `oidc.clientId`            | `<PREFIX>_OIDC_CLIENT_ID`             | none — required               |
-| `oidc.clientSecretFile`    | `<PREFIX>_OIDC_CLIENT_SECRET_FILE`    | none — required               |
-| `oidc.redirectUrl`         | `<PREFIX>_OIDC_REDIRECT_URL`          | none — required               |
+| YAML                      | Variable                            | Default                         |
+|---------------------------|-------------------------------------|---------------------------------|
+| `server.httpsPort`        | `<PREFIX>_SERVER_HTTPS_PORT`        | `8443`                          |
+| `session.backend`         | `<PREFIX>_SESSION_BACKEND`          | `postgres` (`memory` dev only)  |
+| `session.idleTimeout`     | `<PREFIX>_SESSION_IDLE_TIMEOUT`     | `30m`                           |
+| `session.absoluteTimeout` | `<PREFIX>_SESSION_ABSOLUTE_TIMEOUT` | `8h`                            |
+| `session.encryptionKey`   | `<PREFIX>_SESSION_ENCRYPTION_KEY`   | none — required with `postgres` |
+| `oidc.clientId`           | `<PREFIX>_OIDC_CLIENT_ID`           | none — required                 |
+| `oidc.clientSecretFile`   | `<PREFIX>_OIDC_CLIENT_SECRET_FILE`  | none — required                 |
+| `oidc.redirectUrl`        | `<PREFIX>_OIDC_REDIRECT_URL`        | none — required                 |
 
 ### Build, release & versioning
 
@@ -300,7 +317,8 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
 - **Accessibility** — axe-core runs against every rendered page in CI and fails on a violation, which is
   how the WCAG 2.2 AA claim in 0007 and 0019 stays true rather than aspirational.
 - **Security** — tests assert the CSP header has no `unsafe-*`, that a missing CSRF token is rejected,
-  and that a cross-tenant resource returns `404`.
+  that a cross-tenant resource returns `404`, and that a step-up ID token whose `auth_time` is older than
+  `max_age` is rejected.
 
 ## Alternatives considered
 
@@ -309,8 +327,8 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
   in the browser, CORS on the operator ingress, and a public client registration. That reverses 0008's
   posture and adds an exfiltration target, in exchange for interactions these surfaces do not need.
 - **One repository for both portals, RBAC-gated** — cheaper to build and deploy, and genuinely tempting.
-  Rejected because the console issues enrollment tokens and approves service enrollments; those controls
-  should not share a process with the tenant-facing application.
+  Rejected because the console issues enrollment tokens for any tenant and approves service enrollments;
+  those controls should not share a process with the tenant-facing application.
 - **Folding the portals into `gateway`** — would avoid two new services, but the gateway is an
   authorization enforcement point whose value depends on being small.
 - **[`gorilla/csrf`](https://github.com/gorilla/csrf)** — explicit `__Host-` handling and per-form token
@@ -336,7 +354,8 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
   `identity` and holds no database of its own (0007); the portals could do the same and stay
   storage-free. That trades a database for a dependency on identity's availability for every page
   render, which is why it is not proposed outright.
-- **Console step-up scope** — which operations require re-authentication, beyond the three named above?
+- **Console step-up scope** — which operations require re-authentication, beyond the trust-creating ones
+  `identity` enforces?
 - **Notification surface** — do the portals need server-sent events for live drift status, or is htmx
   polling on a 30-second interval sufficient at expected scale?
 
@@ -351,6 +370,12 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
 - [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636) — PKCE.
 - [RFC 8252 §7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3) — loopback redirection for native
   applications.
+- [RFC 9068 §2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1) — `auth_time` and `acr` in JWT
+  access tokens.
+- [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html) — `prompt=login`,
+  `max_age`, and the ID token's `auth_time` and `acr`.
+- [AWS KMS envelope encryption](https://docs.aws.amazon.com/kms/latest/developerguide/kms-cryptography.html#enveloping)
+  — data keys wrapped by a key-encryption key.
 - [`net/http.CrossOriginProtection`](https://pkg.go.dev/net/http#CrossOriginProtection) — added in
   Go 1.25.
 - [RFC 6265bis](https://www.rfc-editor.org/rfc/rfc6265bis#name-cookie-name-prefixes) — `__Host-` cookie

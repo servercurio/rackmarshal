@@ -147,10 +147,13 @@ func (c *Config) AllowLastResort(feature string, log *zerolog.Logger) error
 - **Console output** — logfmt, on stdout, human first. Once logs ship over OTLP, stdout stops being the
   machine path and becomes the thing a person reads over SSH or in `journalctl`, so it is formatted for
   that: `time level message` first, then `trace_id` and `span_id`, then the remaining fields sorted by
-  key so successive lines diff cleanly. Values are quoted only when they contain a space, `=`, or `"`,
-  per [logfmt](https://brandur.org/logfmt). Colour is used only when stdout is a terminal *and* the tier
-  is `development`; `mattn/go-isatty` and `go-colorable` are already linked for it. `console.format` may
-  be set to `json` for a deployment whose collector still scrapes container stdout.
+  key so successive lines diff cleanly. Values are quoted only when they contain a space, `=`, `"`, or a
+  control character — newline and carriage return included — per [logfmt](https://brandur.org/logfmt),
+  and a quoted value is escaped as [`strconv.Quote`](https://pkg.go.dev/strconv#Quote) escapes it
+  (`\"`, `\\`, `\n`, `\r`, and `\x`/`\u` for other control characters), so no value can end a line or
+  start a new one. Colour is used only when stdout is a terminal *and* the tier is `development`;
+  `mattn/go-isatty` and `go-colorable` are already linked for it. `console.format` may be set to `json`
+  for a deployment whose collector still scrapes container stdout.
 - **Timestamps** — `time` is written in RFC 3339 with nanoseconds, in UTC, using
   `func() time.Time { return time.Now().UTC() }`. All three starters set
   `zerolog.TimestampFunc = time.Now().UTC`, which is a method value: it captures a single instant, so
@@ -318,7 +321,9 @@ Dropped logs are visible in the metric, and the console sink is unaffected, so n
 - **TLS for telemetry.** A plaintext `http://` endpoint is a last-resort feature (`plaintext-telemetry`):
   refused in `production` without an override, and warned in `staging`.
 - **Bounded input.** Incoming `traceparent` values at public ingress start new traces, exporter
-  responses are size-capped, and zerolog JSON-escapes values, so field content cannot forge log lines.
+  responses are size-capped, and field content cannot forge log lines in either sink: zerolog
+  JSON-escapes values for the OTLP sink and the `json` console format, and the logfmt console writer
+  quotes and escapes every value holding a control character (see Console output).
 
 ### Environment awareness
 
@@ -381,7 +386,8 @@ the loop cannot form.
 ### Testing
 
 - **`logging`** — golden JSON per tier; timestamps advance between events; trace fields appear only for
-  valid spans.
+  valid spans; values holding `\n`, `\r`, or other control characters render as one quoted, escaped
+  logfmt line.
 - **`environment`** — tables for validation, variable hydration, and `AllowLastResort` across tiers and
   overrides.
 - **Exporter** — an `httptest` collector decodes protobuf and gzip. Tests cover retry codes and
@@ -466,6 +472,7 @@ the loop cannot form.
 - [Loki OTLP ingestion](https://grafana.com/docs/loki/latest/send-data/otel/) — `/otlp/v1/logs`, and
   which resource attributes become stream labels rather than structured metadata.
 - [logfmt](https://brandur.org/logfmt) — the console format and its quoting rules.
+- [`strconv.Quote`](https://pkg.go.dev/strconv#Quote) — the escaping applied to quoted console values.
 - [W3C Trace Context](https://www.w3.org/TR/trace-context/).
 - [Go method values](https://go.dev/ref/spec#Method_values) — why `time.Now().UTC` captures one instant.
 - [go-library-starter](https://github.com/servercurio/go-library-starter),

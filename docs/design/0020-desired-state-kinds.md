@@ -115,11 +115,16 @@ A named set of resources, the endpoints they apply to, and whether they are enfo
 |-----------------------------|-------------------|----------|------------------------------------------|
 | `selector.matchLabels`      | map[string]string | no       | All pairs must match                      |
 | `selector.matchExpressions` | `[]Expression`    | no       | `key`, `operator`, `values`               |
-| `endpoints`                 | []string          | no       | Explicit endpoint names, in addition      |
+| `endpoints`                 | []string          | no       | Explicit endpoint names, stored as IDs    |
 
 At least one of `matchLabels`, `matchExpressions`, or `endpoints` must be present; a `Target` matching
 everything is written explicitly as `matchExpressions: [{key: name, operator: Exists}]` rather than by
 omission, so a set never applies estate-wide by accident.
+
+Names in `endpoints` resolve to endpoint IDs within the writing tenant at admission, and the set stores
+the IDs. An unknown name is rejected. Because names are unique only among non-retired endpoints
+([0009](0009-inventory.md)), storing the name would let a new endpoint that reuses a retired endpoint's
+name inherit its targeting; storing the ID means it does not.
 
 `mode: audit` runs `Observe` and `Plan` and never `Apply` (0011), which makes it the safe way to
 introduce a set to endpoints already carrying state.
@@ -154,7 +159,10 @@ is rejected at admission rather than resolved across sets. Cycles are rejected.
 | `state`       | enum       | no       | `present` | `present` or `absent`                         |
 
 `Content` is one of `inline` (string), `scriptRef` (a `Script` name plus `inputs`), or `source` (a URL
-the agent fetches through its egress proxy).
+the agent fetches through its egress proxy). `source` must be an `https` URL and requires a `sha256` of
+the expected bytes beside it; admission rejects any other scheme or a missing digest. The agent verifies
+the digest of what it fetched before writing anything to `path`, and a mismatch fails the resource with
+the file left untouched.
 
 **`Package`**
 
@@ -188,7 +196,9 @@ A Rego module evaluated at one phase.
 |---------------|--------|----------|-------------------------------------------------------------|
 | `spec.phase`  | enum   | yes      | `admission`, `dispatch`, or `host`                           |
 | `spec.module` | string | yes      | Rego source; package name must match the phase               |
-| `spec.strict` | bool   | no       | Fail the evaluation on an undefined rule rather than allowing |
+
+There is no switch for undefined results. A module whose `deny` is undefined — a misspelled package, for
+example — denies, just as an error or a timeout does (0011); a policy can never fail open.
 
 Phases are not interchangeable. `admission` runs in the provisioner when a document is written,
 `dispatch` when a bundle is built, and `host` on the agent against the rendered bundle. A `host` policy
@@ -216,18 +226,25 @@ larger value is clamped to that ceiling; hardened tiers fix the ceiling at its d
 
 How the provisioner reaches an agentless endpoint.
 
-| Field                 | Type     | Required | Notes                                              |
-|-----------------------|----------|----------|----------------------------------------------------|
-| `spec.driver`         | string   | yes      | Driver name; determines the resource kinds allowed  |
-| `spec.address`        | string   | yes      | Host and port                                       |
-| `spec.tls.pin`        | string   | no       | SHA-256 of the expected certificate                 |
-| `spec.ssh.hostKey`    | string   | no       | Pinned host key                                     |
-| `spec.credentialRef`  | string   | yes      | Name of a secret, resolved within the writing tenant |
+| Field                | Type   | Required                | Notes                                                |
+|----------------------|--------|-------------------------|------------------------------------------------------|
+| `spec.driver`        | string | yes                     | Driver name; determines the resource kinds allowed   |
+| `spec.address`       | string | yes                     | Host and port                                        |
+| `spec.tls.pin`       | string | no                      | SHA-256 of the certificate's SubjectPublicKeyInfo    |
+| `spec.ssh.hostKey`   | string | for `ssh` and `netconf` | Pinned host key                                      |
+| `spec.credentialRef` | string | yes                     | Name of a secret, resolved within the writing tenant |
 
-TLS verification is mandatory and SSH host keys are pinned (0011). `credentialRef` resolves under
-`<secrets.directory>/<tenantId>/<name>`, rejects path separators and `..`, and never resolves across
-tenants — the credential itself never enters a document, a policy input, a script value, or a rendered
-resource.
+TLS verification is mandatory and SSH host keys are pinned (0011). `ssh.hostKey` is required for every
+SSH-based driver (`ssh`, and `netconf`, which runs over SSH), so admission refuses such a connection
+without one and no host key is ever trusted on first use. `tls.pin` is computed over the
+SubjectPublicKeyInfo, as `pin-sha256` is in
+[RFC 7469 §2.4](https://www.rfc-editor.org/rfc/rfc7469#section-2.4), rather than over the whole
+certificate, so it survives a renewal that keeps the key and still fails when the key changes.
+`address` is dialed only after the provisioner's egress checks pass on the resolved
+address, which refuse loopback, link-local, cloud metadata, and control-plane addresses (0011).
+`credentialRef` resolves under `<secrets.directory>/<tenantId>/<name>`, rejects path separators and
+`..`, and never resolves across tenants — the credential itself never enters a document, a policy input,
+a script value, or a rendered resource.
 
 ### Invariants a type cannot carry
 
@@ -238,8 +255,8 @@ struct tag expresses them, and they are what the generated schemas cannot check 
   `metadata.name` are a conflict, reported at plan time and never resolved by last writer wins (0011).
 - **Path separation.** Host resource kinds are refused on agentless endpoints, and device kinds on agent
   endpoints; admission decides from the endpoint's path in `inventory` (0011).
-- **Tenancy.** Every reference a document makes — `credentialRef`, `scriptRef`, `dependsOn` — resolves
-  within the writing tenant only.
+- **Tenancy.** Every reference a document makes — `credentialRef`, `scriptRef`, `dependsOn`,
+  `target.endpoints` — resolves within the writing tenant only.
 - **Ordering.** `dependsOn` and `reloadOn` name resources in the same set; cycles and dangling names are
   rejected at admission, not at apply.
 - **Generation monotonicity.** A bundle carrying these documents is accepted by an agent only if its
@@ -304,3 +321,5 @@ OpenAPI component schemas between versions.
 - [0017](0017-portal.md) — the guided flow that produces a `DirectiveSet`.
 - [OpenAPI Specification 3.0.3](https://spec.openapis.org/oas/v3.0.3.html) — the generated document
   version.
+- [RFC 7469 §2.4](https://www.rfc-editor.org/rfc/rfc7469#section-2.4) — SPKI fingerprint computation
+  used by `tls.pin`.
