@@ -81,14 +81,21 @@ spec:
   target: { selector: { matchLabels: { role: web } } }
   resources:
     - apiVersion: rackmarshal.servercurio.com/v1alpha1
+      kind: Package
+      metadata: { name: nginx }
+      spec: { name: nginx }
+    - apiVersion: rackmarshal.servercurio.com/v1alpha1
       kind: File
       metadata: { name: nginx-conf }
       spec:
         path: /etc/nginx/nginx.conf
         mode: "0644"
         content: { scriptRef: nginx-conf-render, inputs: { workers: 4 } }
-      dependsOn: [nginx]
+      dependsOn: [Package/nginx]
 ```
+
+References between resources are `Kind/name`, because names are unique only per kind
+([0020](0020-desired-state-kinds.md)).
 
 - **Decoding** — `go.yaml.in/yaml/v3` into `yaml.Node`; reject alias nodes (`AliasNode`), documents over
   1 MiB, and unknown top-level fields; convert to JSON; validate with `santhosh-tekuri/jsonschema/v6`.
@@ -121,8 +128,9 @@ failures are `422` problems with `errors[]` pointers and codes such as `policy_d
 
 Agents pull; the provisioner never connects to hosts. `GET …/directive-bundles/current` has no agent ID
 in the path — the provisioner takes it from the verified SPIFFE ID the gateway forwards (0008), so one
-agent cannot request another's bundle. The agent sends `If-None-Match: "<digest>"` and
-`?waitSeconds=0..60`. The response is `304` or `200` with the bundle and an `ETag` of its digest.
+agent cannot request another's bundle. The agent sends `If-None-Match` with the `ETag` it last received
+and `?waitSeconds=0..60`. The response is `304` or `200` with the bundle and an `ETag` of the signed
+envelope's SHA-256 (below).
 
 The bundle is a [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/envelope.md) envelope
 (payload type `application/vnd.rackmarshal.directive-bundle.v1alpha1+json`) plus the signer's certificate
@@ -133,6 +141,15 @@ days), `mode`, rendered resources, `host`-phase policies and scripts, and plugin
 SHA-256, and publisher identity) taken only from verified plugin imports (below). 0001 relies on this
 signature for plugin pins.
 
+**Digest and re-signing.** The bundle digest covers the rendered content only — every payload field
+except `issuedAt`, `notAfter`, and `generation` — so the same documents and facts always yield the same
+digest, and Dispatch stores a new bundle only when content changes. A bundle whose content never
+changes would then reach its own `notAfter`, so once `bundle.resignAfter` (default `0.5`) of
+`bundle.validity` has passed since `issuedAt`, the provisioner re-signs the unchanged content with a new
+`generation`, `issuedAt`, and `notAfter`. An agent's bundle therefore never expires while its desired
+state is stable and the agent can reach the gateway. The `ETag` is the envelope's SHA-256 rather than
+the content digest, so a re-signed bundle still reaches an agent holding the previous one.
+
 Two environment-wide fields ride along for core plugins ([0012](0012-agent.md)): `coreKeyId`,
 naming the embedded core public key agents treat as current, and `coreRevocations`, a list of core key
 IDs and plugin digests. `coreRevocations` is signed by the other embedded core key and copied into the
@@ -141,9 +158,10 @@ already recorded. `coreKeyId` carries only the provisioner's signature, but an a
 when it names a key the agent already embeds and never moves it backwards, so the worst a compromised
 provisioner achieves is retiring the current key early — a denial of service that fails closed, not a
 route to an attacker's key.
-OPA on the host catches a stale or out-of-policy directive,
-and the signature lets the agent reject one forged by a compromised gateway. DSSE needs only
-standard-library ECDSA and an estimated (unmeasured) 50 lines of code, so it adds no module.
+
+OPA on the host catches a stale or out-of-policy directive, and the signature lets the agent reject one
+forged by a compromised gateway. DSSE needs only standard-library ECDSA and an estimated (unmeasured)
+50 lines of code, so it adds no module.
 
 #### Plugin release verification
 
@@ -189,12 +207,19 @@ Level-triggered and idempotent, modeled on Kubernetes controllers
    agent reports drift or failure, or the resync interval (default 15 minutes) elapses.
 2. **Lease** — workers claim rows with `SELECT … FOR UPDATE SKIP LOCKED`
    ([PostgreSQL](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE)) and set
-   `lease_expires_at`, so replicas share the queue and a crashed worker's lease lapses.
+   `lease_owner` and `lease_expires_at`, so replicas share the queue and a crashed worker's lease
+   lapses. While the work runs, a heartbeat renews the lease every third of `reconcile.leaseDuration`
+   (20 s by default), and a failed renewal cancels the work's context. Every write is fenced on
+   `lease_owner`: storing a bundle, recording status, and each driver `Apply` first confirm in
+   PostgreSQL that the row still names this worker with an unexpired lease, so a worker that lost its
+   lease stops before writing. Between that check and a device call, the heartbeat keeps at least
+   two-thirds of the lease remaining.
 3. **Resolve** matching `DirectiveSet`s and the endpoint's facts from `inventory`.
 4. **Render** `render`-phase scripts, validate every resource against its schema, and evaluate
    `dispatch` policies. Any error, timeout, or `deny` stops the endpoint with a condition.
-5. **Dispatch** — for an agent, store a new signed bundle only if the digest changed. For agentless
-   devices, run the driver's `Observe` → `Plan` → `Apply` → `Observe`.
+5. **Dispatch** — for an agent, store a new signed bundle only if the digest changed or the current
+   bundle is due for re-signing (see Directive bundles). For agentless devices, run the driver's
+   `Observe` → `Plan` → `Apply` → `Observe`.
 6. **Record** status and requeue failures with exponential backoff (cap 30 minutes).
 
 Inventory changes arrive by long-polling [0009](0009-inventory.md)'s `GET /endpoint-events`, which is
@@ -252,13 +277,17 @@ deny contains {"code": "command_denied", "message": msg} if {
 Optional, and behind a build tag: a plugin's required bundle is validated and evaluated with the
 jsonschema, OPA, and sigstore-go this service already links, so the default build policies every plugin
 kind while linking no gRPC at all. Only a plugin that ships a provisioner service needs the host, which
-brings 0013's go-plugin and gRPC stack with it ([0021](0021-plugin-extensibility.md)).
+brings a gRPC client with it ([0021](0021-plugin-extensibility.md)).
 
-A provisioner service runs as a separate process, never in this address space: a sidecar container on
-`kubernetes`, a `rackmarshal-provisioner-plugin-<name>.service` unit on `package`, an SCM service on
-`windows`, each on a local socket or named pipe that binds no port. It receives a capability grant
-(`validate`, `interpret`, `propose`) the same way an agent half does, holds no database credentials, and
-has no network grant by default.
+A provisioner service is an ordinary Rackmarshal service, not a go-plugin plugin, and runs as a separate
+process, never in this address space: a sidecar container on `kubernetes`, a
+`rackmarshal-provisioner-plugin-<name>.service` unit on `package`, an SCM service on `windows`, each with
+its own lifecycle. It enrolls with `identity` like any service, as
+`spiffe://<environment-id>/service/plugin-<name>`, and the provisioner dials it with gRPC over a Unix
+domain socket under `plugins.socketDir` — `AF_UNIX`, which Windows 10 1803 and Server 2019 and later
+also provide ([Microsoft](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/)) — with
+mutual TLS on both SPIFFE IDs. It is granted capabilities (`validate`, `interpret`, `propose`) in its
+`Plugin` document, holds no database credentials, and has no network grant by default.
 
 `InterpretResult` runs after a report is accepted and validated, and its conditions merge into
 `endpoint_status`. `Propose` output is desired state like any other: it is written as a
@@ -281,8 +310,8 @@ type Driver interface {
 ```
 
 - **Built in, compiled in** — `http` (REST and JSON device and cloud APIs on `net/http`), `ssh` (CLI
-  over `golang.org/x/crypto/ssh`), and `netconf` ([RFC 6241](https://www.rfc-editor.org/rfc/rfc6241) over
-  SSH on `encoding/xml`). A new built-in driver needs its own design note with its dependency cost; a
+  over `golang.org/x/crypto/ssh`), and `netconf` ([RFC 6241](https://www.rfc-editor.org/rfc/rfc6241)
+  over SSH as [RFC 6242](https://www.rfc-editor.org/rfc/rfc6242) specifies, on `encoding/xml`). A new built-in driver needs its own design note with its dependency cost; a
   third party extends the service through a plugin instead ([0021](0021-plugin-extensibility.md)).
 - **Safety** — one lease per device, a per-connection concurrency cap, and per-call timeouts.
   `DirectiveSet.spec.mode: audit` runs `Observe` and `Plan` only.
@@ -332,8 +361,7 @@ Alternatives.
 gRPC API); [0012](0012-agent.md#sigstore-verifier-measurements) records the measurement and import
 chains. It is accepted in this service and in the core `sigstore` validator plugin
 ([0014](0014-agent-plugins.md)), so the agent binary and other plugins never link it. The combined
-set with
-OPA, Tengo, and jsonschema is not measured yet; the module allowlist records it.
+set with OPA, Tengo, and jsonschema is not measured yet; the module allowlist records it.
 
 ### Data & storage
 
@@ -353,6 +381,25 @@ key.
 | `plugin_bundles`       | per plugin version: verified schemas and compiled policy, keyed by bundle digest            |
 | `audit_events`         | append-only: principal, action, document, policy decision                                  |
 
+**Plugin results.** `enforcement_reports` carries a bounded `result_json` beside the observed digest
+([0021](0021-plugin-extensibility.md)). This table first stored only "digests of observed state, never
+content", matching 0012's per-resource reports. 0021 replaced that rule with *never file content;
+bounded plugin results, validated against the schema in the plugin's bundle* — the control the old rule
+was providing, without foreclosing a structured result. The payload is validated on receipt, before
+`InterpretResult` sees it, and an invalid one is stored as a resource-level failure rather than
+rejecting the report. Results are tenant data and are handled as 0009 handles facts: never logged, never
+in a metric label, only size and digest in a span.
+
+Credentials for devices are **never** stored here or in bundles: `credentialRef` names a secret that a
+`SecretProvider` resolves at apply time. The first provider reads files mounted by `infrastructure`.
+
+A `credentialRef` is resolved within the writing tenant only: the provider reads
+`<secrets.directory>/<tenantId>/<name>`, rejects any `name` containing a path separator or `..`, and
+refuses a reference from a different tenant even when the file exists. Without that scoping a tenant
+could name another tenant's device credential and receive it at apply time. The same process evaluates
+tenant-authored Rego and Tengo, so credentials are resolved in the driver at apply time and never
+placed in a policy input, a script value, or a rendered resource.
+
 #### Scaling
 
 N replicas, nothing elected. Reconciliation was designed for this from the start — workers claim
@@ -366,34 +413,18 @@ stating:
   needs no separate claim.
 - **`enforcement_reports` partition creation** is scheduled work and would otherwise race: N replicas
   would each try to create next month's partition, and all but one would fail on the duplicate
-  relation. It takes `pg_try_advisory_lock` and skips the tick when another replica holds it, running
-  far enough ahead of the month boundary that a skipped tick is harmless.
-
-**Plugin results.** `enforcement_reports` carries a bounded `result_json` beside the observed digest
-([0021](0021-plugin-extensibility.md)). The rule that replaces "never content" is *never file content;
-bounded plugin results, validated against the schema in the plugin's bundle* — the control it was always
-providing, without foreclosing a structured result. The payload is validated on receipt, before
-`InterpretResult` sees it, and an invalid one is stored as a resource-level failure rather than
-rejecting the report. Results are tenant data and are handled as 0009 handles facts: never logged, never
-in a metric label, only size and digest in a span.
-
-Credentials for devices are **never** stored here or in bundles: `credentialRef` names a secret that a
-`SecretProvider` resolves at apply time. The first provider reads files mounted by
-`infrastructure`.
-
-A `credentialRef` is resolved within the writing tenant only: the provider reads
-`<secrets.directory>/<tenantId>/<name>`, rejects any `name` containing a path separator or `..`, and
-refuses a reference from a different tenant even when the file exists. Without that scoping a tenant
-could name another tenant's device credential and receive it at apply time. The same process evaluates
-tenant-authored Rego and Tengo, so credentials are resolved in the driver at apply time and never
-placed in a policy input, a script value, or a rendered resource.
+  relation. It runs in one transaction that takes `pg_try_advisory_xact_lock` and skips the tick when
+  another replica holds it, running far enough ahead of the month boundary that a skipped tick is
+  harmless. The transaction-level lock is released at commit, so it cannot leak on a pooled connection
+  ([CONVENTIONS](CONVENTIONS.md#running-multiple-replicas)).
 
 ### Security
 
 - **Multi-tenancy** — the tenant comes from the verified principal, as 0002 proposes. Every repository
   method requires a tenant ID, and PostgreSQL
   [row-level security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) with
-  `SET LOCAL rackmarshal.tenant_id` per transaction is defense in depth.
+  `SELECT set_config('rackmarshal.tenant_id', $1, true)` at the start of each transaction is defense
+  in depth; unlike `SET LOCAL`, `set_config` takes the tenant ID as a bind parameter.
 - **RBAC hooks** — the gateway authorizes each operation (0008). The provisioner additionally checks
   permissions such as `provisioner.policies.write` from the forwarded principal (format per 0006), and
   passes `principal` to `admission` policies for finer rules. Writing `Policy` and `Script` documents is
@@ -452,6 +483,7 @@ from [CONVENTIONS.md](CONVENTIONS.md).
 | `script.maxAllocs`            | `RACKMARSHAL_PROVISIONER_SCRIPT_MAX_ALLOCS`            | `100000` (script ceiling)              |
 | `script.timeout`              | `RACKMARSHAL_PROVISIONER_SCRIPT_TIMEOUT`               | `2s`                                   |
 | `bundle.validity`             | `RACKMARSHAL_PROVISIONER_BUNDLE_VALIDITY`              | `168h`                                 |
+| `bundle.resignAfter`          | `RACKMARSHAL_PROVISIONER_BUNDLE_RESIGN_AFTER`          | `0.5` (fraction of `bundle.validity`)  |
 | `bundle.maxWait`              | `RACKMARSHAL_PROVISIONER_BUNDLE_MAX_WAIT`              | `60s`                                  |
 | `inventory.url`               | `RACKMARSHAL_PROVISIONER_INVENTORY_URL`                | required                               |
 | `secrets.directory`           | `RACKMARSHAL_PROVISIONER_SECRETS_DIRECTORY`            | required if devices are used           |
@@ -475,9 +507,10 @@ support the current and previous `apiVersion`.
   `go run github.com/open-policy-agent/opa@v1.20.2 test`.
 - **Sandbox** — importing `os`, file imports, allocation exhaustion, infinite loops, and oversized output
   must all fail.
-- **Determinism** — rendering the same fixture twice yields the same digest.
-- **Reconciliation** — integration tests on a disposable PostgreSQL: lease expiry, two workers, backoff,
-  and selector changes.
+- **Determinism** — rendering the same fixture twice yields the same digest, and re-signing changes the
+  envelope and `ETag` but not the digest.
+- **Reconciliation** — integration tests on a disposable PostgreSQL: lease expiry, lease renewal, a
+  worker that loses its lease writing nothing, two workers, backoff, and selector changes.
 - **Drivers** — `httptest` and an in-process `x/crypto/ssh` server. The dialer refuses loopback,
   link-local, metadata, denied, and non-allowlisted addresses, including through a DNS name and a
   redirect; shell metacharacters in every templated `ssh` argument reach the server quoted. Contract
@@ -543,10 +576,13 @@ support the current and previous `apiVersion`.
   [`tuf`](https://pkg.go.dev/github.com/sigstore/sigstore-go/pkg/tuf) packages; measured in 0012.
 - [0021 — Plugin extensibility](0021-plugin-extensibility.md) — the `Plugin` document, the required
   provisioner bundle, the plugin host, and the result round trip.
+- [AF_UNIX comes to Windows](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/) —
+  Unix domain sockets on Windows 10 1803 and later.
 - [PostgreSQL `FOR UPDATE SKIP LOCKED`](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE)
   and [row security policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html).
 - [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110) — conditional requests;
-  [RFC 6241](https://www.rfc-editor.org/rfc/rfc6241) — NETCONF.
+  [RFC 6241](https://www.rfc-editor.org/rfc/rfc6241) — NETCONF;
+  [RFC 6242](https://www.rfc-editor.org/rfc/rfc6242) — NETCONF over SSH.
 - [`net.Dialer`](https://pkg.go.dev/net#Dialer) — the `Control` hook the driver dialer checks addresses
   in; [Amazon EC2 instance metadata](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html)
   — the IPv4 and IPv6 metadata addresses.

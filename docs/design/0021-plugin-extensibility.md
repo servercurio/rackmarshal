@@ -7,12 +7,12 @@
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-20
-- **Summary:** Plugins become a paired extension: an agent half that enforces a kind on an endpoint and an
-  required provisioner bundle carrying its schemas and policy, and an optional provisioner service that
-  interprets results and proposes follow-up work. One `Plugin` document and one version pin all of it.
-  Apply results travel back as bounded, schema-validated
-  payloads instead of digests alone, and each half may ship Rego that the host evaluates, scoped to the
-  kinds the plugin was granted and able only to deny.
+- **Summary:** Plugins become a paired extension: an optional agent half that enforces a kind on an
+  endpoint, a required provisioner bundle carrying its schemas and policy, and an optional provisioner
+  service that interprets results and proposes follow-up work. One `Plugin` document and one version
+  pin all of it. Apply results travel back as bounded, schema-validated payloads instead of digests
+  alone, and each half may ship Rego that the host evaluates, scoped to the kinds the plugin was granted
+  and able only to deny.
 
 > An initial draft with concrete proposals, bounded by the
 > [Resolved decisions](0001-project-repositories.md#resolved-decisions) in 0001. Conventions other
@@ -20,33 +20,34 @@
 
 ## Context & goals
 
-The plugin model in [0013](0013-agent-plugin-sdk.md), [0014](0014-agent-plugins.md),
-and [0015](0015-plugin-starter.md) is entirely agent-side: `hashicorp/go-plugin` binaries that
-`agent` launches on the endpoint. `provisioner` never runs plugin code. Its only
-relationship to a plugin is supply chain — verifying a release at import and pinning digests into bundles
-([0011](0011-provisioner.md)).
+Before this document, the plugin model in [0013](0013-agent-plugin-sdk.md),
+[0014](0014-agent-plugins.md), and [0015](0015-plugin-starter.md) was entirely agent-side:
+`hashicorp/go-plugin` binaries that `agent` launches on the endpoint. `provisioner` ran no plugin code.
+Its only relationship to a plugin was supply chain — verifying a release at import and pinning digests
+into bundles ([0011](0011-provisioner.md)).
 
-That is enough for a plugin whose whole job is to converge a kind on a host. It is not enough for four
-things the design has since needed, three of which the existing documents already circle without naming:
+That is enough for a plugin whose whole job is to converge a kind on a host. It was not enough for four
+things the design came to need, three of which the earlier documents circled without naming:
 
-- A plugin has no way to run anything **beside the provisioner**, so a kind that must be reached from the
-  control plane rather than from the endpoint has nowhere to live. 0011 links its drivers into the
+- A plugin had no way to run anything **beside the provisioner**, so a kind that must be reached from the
+  control plane rather than from the endpoint had nowhere to live. 0011 links its drivers into the
   provisioner binary and rejected go-plugin drivers, child processes the provisioner would launch,
   because they bring gRPC into the service against the API style convention. That rejection never
   considered a separate process with its own lifecycle.
-- A plugin has no **provisioner-side half** to validate its kind at admission, interpret what its agent
-  half reported, or act on it. 0011 asks "who publishes their schemas" and 0013 asks "how do their schemas
-  reach the agent and 0011"; both are this gap seen from one end.
-- An agent plugin **cannot return a structured result**. Reports carry "a digest of observed state (never
-  file content)" (0012) and `enforcement_reports` stores "digests of observed state, never content"
-  (0011). `ApplyResourceResponse` is declared in 0013's contract and its fields are never specified.
-- Neither half can **supply its own policy**. The provisioner layers platform Rego under tenant `Policy`
-  documents (0011) and the agent layers an embedded baseline under local `policy.d` and the bundle's
-  `host` policies (0012). There is no plugin layer in either stack.
+- A plugin had no **provisioner-side half** to validate its kind at admission, interpret what its agent
+  half reported, or act on it. 0011 asked "who publishes their schemas" and 0013 asked "how do their
+  schemas reach the agent and 0011"; both were this gap seen from one end.
+- An agent plugin **could not return a structured result**. Reports carried only "a digest of observed
+  state (never file content)" (0012), and `enforcement_reports` stored "digests of observed state, never
+  content" (0011). `ApplyResourceResponse` was declared in 0013's contract with no fields specified.
+- Neither half could **supply its own policy**. The provisioner layers platform Rego under tenant
+  `Policy` documents (0011) and the agent layers an embedded baseline under local `policy.d` and the
+  bundle's `host` policies (0012). Neither stack had a plugin layer.
 
 **Goals**
 
-- One plugin, two optional halves, one version, one verification chain.
+- One plugin — an optional agent half, an optional provisioner service, and a required bundle — at one
+  version, with one verification chain.
 - Every plugin usable at admission, because every plugin ships its schemas and policy to the control
   plane whether or not it runs anything there.
 - A bounded, schema-validated result payload from a plugin's agent half back to the control plane.
@@ -69,8 +70,9 @@ things the design has since needed, three of which the existing documents alread
 - **`Plugin` document** — supersedes `AgentPlugin`, naming every artifact at one version with one publisher.
 - **Provisioner bundle** — required of every plugin: the schemas and Rego the control plane needs to
   validate and police the plugin's kinds without executing any of its code.
-- **Provisioner plugin host** — verifies, launches, and supervises the optional provisioner service as a
-  separate process, and routes interpretation and proposal calls to it.
+- **Provisioner plugin host** — dials the optional provisioner service, authenticates it by SPIFFE ID,
+  checks its manifest against the pin, and routes interpretation and proposal calls to it. The
+  deployment target, not `provisioner`, runs the service ([0005](0005-infrastructure.md)).
 - **Result channel** — carries a bounded, schema-validated payload from the agent half to the control plane.
 - **Policy layer** — compiles and evaluates plugin-supplied Rego on both sides, scoped and denial-only.
 
@@ -123,13 +125,14 @@ plane reason about a kind it did not define:
 
 ```
 bundle/
-├── manifest.yaml            # the same manifest the agent half embeds
+├── manifest.yaml                     # the same manifest the agent half embeds
 ├── schemas/
-│   └── acme.example.com/v1alpha1/VirtualServer.json
-│       # one per kind in the agent half's resource: capabilities, plus the result schema
+│   └── acme.example.com/v1alpha1/    # schemas/<group>/<version>/<Kind>.json
+│       ├── VirtualServer.json        # one per kind in the agent half's resource: capabilities
+│       └── VirtualServer.result.json # that kind's result schema, if it returns results
 └── policy/
-    ├── admission.rego       # package rackmarshal.plugin.bigip.admission
-    └── host.rego            # package rackmarshal.plugin.bigip.host
+    ├── admission.rego                # package rackmarshal.plugin.bigip.admission
+    └── host.rego                     # package rackmarshal.plugin.bigip.host
 ```
 
 The alternative is that the provisioner passes a spec it cannot read straight through to a bundle it
@@ -153,33 +156,49 @@ none:
 The bundle also carries the result schema that both ends validate against (see The result round trip), so
 a plugin with no running provisioner half still gets its results checked at the control plane.
 
+These are standalone JSON Schema files, and that does not conflict with 0020's rule that a kind is
+described only by its Go type: that rule covers the kinds `api-schema` defines. A plugin-defined kind has
+no Go type there, so the schema in its bundle is its description, and 0020 leaves plugin kinds to this
+document ([0020](0020-desired-state-kinds.md#context--goals)).
+
 Requiring this costs a plugin author almost nothing — the schemas and Rego already have to exist for the
 agent half to be useful — and it means the expensive half of this proposal, the plugin host below, is
 needed only by plugins that genuinely interpret or propose.
 
 #### Provisioner plugin host
 
-A provisioner-side half is **a separate process with its own lifecycle**, never code loaded into the
-service. It speaks the protobuf contract from `agent-plugin-sdk`, extended with the services
-below, over mutual TLS on a loopback or Unix-socket transport.
+A provisioner-side half is **an ordinary Rackmarshal service with its own lifecycle**, never code
+loaded into `provisioner` and never a go-plugin child of it. It enrolls with `identity` like any
+service, as `spiffe://<environment-id>/service/plugin-<name>`
+([CONVENTIONS — Security and identity](CONVENTIONS.md#security-and-identity)), and `provisioner` dials
+it with gRPC over a Unix domain socket, with mutual TLS on SPIFFE IDs. It speaks the protobuf contract
+from `agent-plugin-sdk`, extended with the services below. go-plugin's AutoMTLS, `SecureConfig`, and
+`ReattachConfig` play no part here: they authenticate a child the host launched, and `provisioner`
+launches nothing. Only the agent half is a go-plugin plugin, launched by the agent's executor (0012).
 
-| Target | Process model | Transport |
-|--------|---------------|-----------|
-| `kubernetes` | Sidecar container in the provisioner pod, one per replica | Unix socket on a shared `emptyDir` |
-| `podman`, `docker` | Sibling container in the same pod or network namespace | Unix socket on a shared volume |
-| `package` | `rackmarshal-provisioner-plugin-<name>.service`, socket-activated | Unix socket, root-owned directory |
-| `windows` | A service under the SCM | Named pipe with a restrictive DACL |
+| Target             | Process model                                                     | Transport                                               |
+|--------------------|-------------------------------------------------------------------|---------------------------------------------------------|
+| `kubernetes`       | Sidecar container in the provisioner pod, one per replica         | Unix socket on a shared `emptyDir`                      |
+| `podman`, `docker` | Sibling container in the same pod or network namespace            | Unix socket on a shared volume                          |
+| `package`          | `rackmarshal-provisioner-plugin-<name>.service`, socket-activated | Unix socket in `plugins.socketDir`, group `provisioner` |
+| `windows`          | A service under the SCM                                           | Unix socket (`AF_UNIX`)                                 |
 
-Every row is a local transport. A provisioner-side half binds no port and is not reachable from outside
-the host or pod, which is what keeps adding a plugin from adding an attack surface.
+Every row is a Unix domain socket, which Windows provides from Windows 10 1803 and Windows Server 2019
+([AF_UNIX on Windows](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/)). Both ends
+authenticate: `provisioner` accepts only the `plugin-<name>` SPIFFE ID of a plugin a `Plugin` document
+names and checks the service's `GetManifest` name and version against that document's pin, and the
+service accepts only `spiffe://<environment-id>/service/provisioner`. A provisioner service binds no TCP
+port and is not reachable from outside the host or pod, which is what keeps adding a plugin from adding
+an attack surface.
 
-**This requires amending an explicit convention.** CONVENTIONS states "there is no service-to-service
-gRPC; gRPC appears only between `agent` and plugins." The principle behind that rule is that
-*services* speak one REST + JSON contract, and *a host speaks to its plugins* over the plugin protobuf
-contract. This proposal widens the carve-out from "`agent` and plugins" to "a host process and
-its plugins" and changes nothing about service-to-service traffic. That is a deliberate amendment to be
-made in CONVENTIONS, not a reading of the existing text, and it is listed under Alternatives with the two
-options that would have avoided it.
+**This amended an explicit convention.** CONVENTIONS used to state "there is no service-to-service
+gRPC; gRPC appears only between `agent` and plugins." The principle behind that rule is that *services*
+speak one REST + JSON contract, and *a host speaks to its plugins* over the plugin protobuf contract.
+CONVENTIONS now widens the carve-out from "`agent` and plugins" to "a host process and its own plugins",
+names the provisioner-to-plugin-service link as the one service-to-service gRPC link, and changes nothing
+else about service-to-service traffic
+([CONVENTIONS — API contract and style](CONVENTIONS.md#api-contract-and-style)). Alternatives lists the
+two options that would have avoided the amendment.
 
 New services, in the same protobuf package and versioned with it:
 
@@ -210,9 +229,9 @@ serializing work on an endpoint, and plugins add no coordination problem of thei
 
 #### The result round trip
 
-**The two halves never connect to each other.** There is no plugin-to-plugin channel, and a plugin half
-never opens or accepts a network connection as part of this design. Each half talks only to its own host,
-over a local socket, and the halves reach each other the way everything else in Rackmarshal does — as a
+**The two halves never connect to each other.** There is no plugin-to-plugin channel. Each half talks
+only to its own host, over a host-local socket — a Unix socket, or loopback TCP for an agent half on
+Windows (0013) — and the halves reach each other the way everything else in Rackmarshal does, as a
 payload carried over the existing REST + JSON path through the gateway:
 
 ```
@@ -272,12 +291,13 @@ The schema each check uses is the one the plugin publishes with the version that
 validate against the same definition by construction: the pin covers the schema exactly as it covers the
 binary and the policy.
 
-**This amends 0011's "never content" rule, and the amendment is narrower than it sounds.** That rule
+**This amended 0011's "never content" rule, and the amendment is narrower than it sounds.** That rule
 exists to keep file bodies out of the provisioner's database — a privacy and size control, written when
 the only thing a plugin might have returned was the content it just wrote. A bounded, schema-validated,
-plugin-defined result is not file content. The rule becomes: *never file content; bounded plugin results,
-validated against the plugin's published schema.* Results are tenant data and inherit the handling 0009
-already sets for facts — never logged, never in a metric label, and only their size and digest in a span.
+plugin-defined result is not file content. The rule became, and 0011 now records: *never file content;
+bounded plugin results, validated against the plugin's published schema.* Results are tenant data and
+inherit the handling 0009 already sets for facts — never logged, never in a metric label, and only their
+size and digest in a span.
 
 `Propose` output is desired state like any other. It is written as a `DirectiveSet` revision attributed
 to the plugin, and it passes admission, the tenant's policies, and the plugin's own policy before it can
@@ -331,18 +351,20 @@ The resulting stacks, with the new layer in bold:
 
 ### Dependencies
 
-- **Rackmarshal** — `agent-plugin-sdk` gains the provisioner-side services and the `serve`
-  helpers for them; `api-schema` gains the `Plugin` kind; `provisioner` gains the
-  plugin host.
+- **Rackmarshal** — `agent-plugin-sdk` gains the provisioner-side services and a helper that serves
+  them on a Unix socket with mutual TLS on the service's own certificate, not go-plugin; `api-schema`
+  gains the `Plugin` kind; `provisioner` gains the plugin host.
 - **Third-party** — the mandatory path adds **nothing**. Validating a bundle's schemas and evaluating its
   Rego uses the jsonschema and OPA v1.20.2 that `provisioner` already links (0011), and
   verifying the bundle uses the sigstore-go it already links for imports. This is the strongest argument
   for splitting the bundle from the service: the part every plugin must ship costs no new dependency.
-  The optional plugin host does carry a cost — 0013's gRPC and go-plugin stack, measured at 14 linked
-  modules — and because it is now needed only by plugins that interpret or propose, putting it behind a
-  build tag is practical rather than theoretical. See Open questions.
-- **Plugin authors** — `plugin-starter` (0015) grows a provisioner-half example and a second
-  fake host, so the local harness exercises the bundle, the optional service, and their pinning together.
+  The optional plugin host does carry a cost — gRPC, which is part of the 14 modules 0013 measured for
+  its gRPC and go-plugin stack; without go-plugin, `hclog`, `yamux`, and the terminal-color modules, the
+  count is lower but not measured — and because it is needed only by plugins that interpret or propose,
+  putting it behind a build tag is practical rather than theoretical. See Open questions.
+- **Plugin authors** — `plugin-starter` (0015) grows a bundle example and a second fake host,
+  `fakeprovisioner`, so the local harness exercises the bundle, the optional service, and their pinning
+  together.
 
 ### Data & storage
 
@@ -372,18 +394,22 @@ and is rebuilt on a pin change like any other bundle input.
   (rule 1 above) rather than by review.
 - **Result payloads are tenant data**, handled as 0009 handles facts: never logged, never in metric
   labels, size and digest only in traces.
-- **Process isolation.** A provisioner service runs as its own user with no database credentials and no
-  network grant by default, reachable only over the socket the host created. A plugin that ships only a
-  bundle introduces no process at all, which is why the bundle is the mandatory part and the service is not.
+- **Process isolation.** A provisioner service runs as its own user or container with no database
+  credentials. It holds its own certificate, `spiffe://<environment-id>/service/plugin-<name>`, which
+  `identity` issues and revokes as for any service, needs the network only to enroll and renew, and
+  serves only on its Unix socket, where it accepts only `provisioner`'s SPIFFE ID. A plugin that ships
+  only a bundle introduces no process at all, which is why the bundle is the mandatory part and the
+  service is not.
 - **The sidecar boundary is weaker.** Containers in a Kubernetes pod share its network namespace
   ([pods](https://kubernetes.io/docs/concepts/workloads/pods/#pod-networking)), as does a `podman` or
   `docker` sibling in the same pod or network namespace, so a sidecar can reach everything the
-  provisioner can, including its loopback listeners and the database's address; "no network grant" is
-  then a property of the plugin, not a barrier. On Kubernetes the pod keeps
+  provisioner can, including its loopback listeners and the database's address; staying off the
+  network is then a property of the plugin, not a barrier. On Kubernetes the pod keeps
   `automountServiceAccountToken: false` and mounts the projected token with audience
   `spiffe://<environment-id>/service/identity` only in the enrollment init container
-  ([0005](0005-infrastructure.md)), and the sidecar mounts only the socket `emptyDir`, never the key
-  volume. A `NetworkPolicy`
+  ([0005](0005-infrastructure.md)), and the sidecar mounts the socket `emptyDir` and its own key volume,
+  never the provisioner's. A pod has one service account, mapped to `provisioner`, so the sidecar cannot
+  enroll with the pod's projected token; how it enrolls is an open question. A `NetworkPolicy`
   ([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)) can
   narrow what the whole pod reaches but applies per pod, so it cannot separate the sidecar from the
   provisioner; that takes a separate pod, which trades the local socket for a network listener.
@@ -430,7 +456,7 @@ each host-to-plugin call, so a proposal is traceable back to the report that pro
 
 ### Build, release & versioning
 
-One release train per plugin, as 0014 already sets for the first-party set: every artifact built from one
+One release train per repository, as 0014 sets for the first-party set: every artifact built from one
 commit, released under one tag, signed by one publisher identity, and recorded in one `plugins-index.json`.
 The provisioner bundle is a release asset like the binaries, signed the same way. A release without one is
 not a valid plugin release, which CI enforces in `plugin-starter` (0015) so a third party finds
@@ -453,10 +479,10 @@ out at build time rather than at import.
   by the agent, and an agent that reports an invalid result is caught by the provisioner.
 - **Proposals** — `Propose` output passes through admission and is denied by the tenant's policy when the
   tenant denies it, and by the plugin's own policy when the plugin does.
-- **Process model** — the plugin host recovers from a crashed half, and a half that never starts fails the
-  plugin rather than the service; a half that attempts to bind a network port is refused by its sandbox
-  on the `package` and `windows` targets (a sidecar or sibling container shares its pod's network
-  namespace; see Security).
+- **Process model** — the plugin host reconnects when a crashed service restarts, and a service that
+  is down fails that plugin's calls rather than `provisioner`. The host refuses a peer whose SPIFFE ID
+  is not the pinned plugin's `plugin-<name>`, and a service whose manifest name or version differs from
+  the pin.
 - **Determinism** — the same documents, facts, and plugin pins produce the same bundle digest with plugin
   policy in the evaluation set.
 
@@ -494,17 +520,17 @@ out at build time rather than at import.
 
 ## Open questions
 
-- **Module budget** — the plugin host would move 0013's gRPC and go-plugin stack (14 linked modules) into
-  `provisioner`, which already links OPA's 26. With the bundle mandatory and the service
-  optional, a build tag now looks right rather than merely tempting: the default build would validate and
-  police every plugin kind while linking no gRPC at all. Confirm, and decide whether the tagged build is
-  the default in released artifacts.
-- **Where a plugin's schemas live** — this document assumes the plugin publishes them and the provisioner
-  half validates against them, which answers 0011's "who publishes their schemas" and 0013's "how do their
-  schemas reach the agent and 0011". Does 0020's "no standalone JSON Schema files" rule extend to
-  plugin-defined kinds, whose Go types cannot live in `api-schema`?
+- **Module budget** — the plugin host would bring gRPC (part of the 14 modules 0013 measured with
+  go-plugin, which the host does not need) into `provisioner`, which already links OPA's 26. With the
+  bundle mandatory and the service optional, a build tag now looks right rather than merely tempting: the
+  default build would validate and police every plugin kind while linking no gRPC at all. Confirm, and
+  decide whether the tagged build is the default in released artifacts.
 - **`AgentPlugin` migration** — rename with an alias for one release, or a breaking change while every
   kind is still `v1alpha1`?
+- **Sidecar enrollment on Kubernetes** — the pod's one service account maps to `provisioner`, so the
+  sidecar needs another credential: a service enrollment token for `plugin-<name>` mounted only into its
+  container, or a separate pod with its own service account, which trades the local socket for a network
+  listener?
 - **Sidecar lifecycle on Kubernetes** — a native sidecar (an init container with `restartPolicy: Always`)
   ties the plugin's lifetime to the pod's; is that the right coupling for a plugin that fails repeatedly?
 - **Proposal loops** — a plugin whose `Propose` output triggers a report that triggers another proposal.
@@ -536,7 +562,10 @@ out at build time rather than at import.
   and the rule that Go types are the only description of a kind.
 - [CONVENTIONS.md](CONVENTIONS.md) — the REST + JSON rule and its plugin carve-out, and the replica rules
   the plugin host relies on.
-- [hashicorp/go-plugin](https://github.com/hashicorp/go-plugin) — the plugin transport and `SecureConfig`.
+- [hashicorp/go-plugin](https://github.com/hashicorp/go-plugin) — the agent half's transport and
+  `SecureConfig`; the provisioner service does not use it.
+- [AF_UNIX comes to Windows](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/) — Unix
+  domain sockets on Windows 10 1803 and later.
 - [OPA `v1/rego`](https://pkg.go.dev/github.com/open-policy-agent/opa/v1/rego) — capabilities, strict
   builtin errors, and evaluation deadlines.
 - [sigstore-go `pkg/verify`](https://github.com/sigstore/sigstore-go) — the verification chain every

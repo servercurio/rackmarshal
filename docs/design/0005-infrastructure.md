@@ -100,7 +100,7 @@ infrastructure/
 
 #### Environment and target selection
 
-`group_vars/all/` holds four files. `environment.yaml` is unchanged: `rackmarshal_environment` declares
+`group_vars/all/` holds four files. In `environment.yaml`, `rackmarshal_environment` declares
 `name`, `tier`, `id` (26-character base32 from the ceremony), `caBundle` (public roots only; two during
 root rotation), and `overrides`. `secrets.yaml` holds secret-manager references only. `artifacts.yaml` is
 described below, and `deployment.yaml` selects targets. Services may differ — for example
@@ -125,13 +125,15 @@ Every service tolerates N replicas
 ([CONVENTIONS — Running multiple replicas](CONVENTIONS.md#running-multiple-replicas)), so `replicas` is
 a capacity and availability choice rather than a per-service constraint. The default of 2 is what makes
 the rolling upgrade below non-disruptive; 1 is valid and means accepting a restart window. On
-`kubernetes` the value sets the chart's `replicaCount` and a `PodDisruptionBudget` of `replicas - 1`,
-so a drain cannot take the last one; on `package` and `windows` it is the number of hosts in the group.
+`kubernetes` the value sets the chart's `replicaCount` and a `PodDisruptionBudget` with
+`minAvailable: replicas - 1`, so a drain evicts one pod at a time and cannot take the last one. At 1
+replica that is `minAvailable: 0`, which gives no protection, consistent with accepting a restart
+window. On `package` and `windows` it is the number of hosts in the group.
 
 Every rendered Kubernetes object carries the recommended labels
 ([CONVENTIONS](CONVENTIONS.md#deployment-artifacts)): `app.kubernetes.io/part-of: rackmarshal` names the
 application and `app.kubernetes.io/name` and `/component` name the component, so a namespace shared with
-other software can still be selected, drained, or dashboards-filtered by product or by service. The
+other software can still be selected, drained, or filtered in dashboards by product or by service. The
 labels mirror `service.namespace` and `service.name` in telemetry, so a Kubernetes selector and a
 Loki or metrics query use the same two names.
 

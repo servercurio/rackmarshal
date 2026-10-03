@@ -7,7 +7,7 @@
 Cross-cutting conventions for the per-repository design documents that follow
 [0001](0001-project-repositories.md). This is not a design document: it collects the proposals from
 [0002](0002-api-schema.md), [0003](0003-sdk.md), and [0004](0004-common.md) that other
-repositories depend on, so documents 0005–0015 stay consistent. Every item is a **Draft proposal** until
+repositories depend on, so every later document stays consistent. Every item is a **Draft proposal** until
 those documents are accepted. 0001's Resolved decisions always win; a document that deviates from a
 convention says so under Alternatives considered and links the convention it breaks.
 
@@ -36,7 +36,8 @@ a module, as 0001 is.
   Configuration; Build, release & versioning; Testing.
 - Link 0001 by heading anchor (`0001-project-repositories.md#environment-identity`) and siblings by file
   name. Label proposals; put unknowns in Open questions; cite every external claim in References and
-  mark anything unverified. Wrap at about 105 characters; `—` em dashes; no HTML.
+  mark anything unverified. Wrap at about 105 characters; `—` em dashes; no HTML apart from the SPDX
+  comment.
 
 ## Go modules and layout
 
@@ -61,17 +62,30 @@ a module, as 0001 is.
   drift. There are no standalone JSON Schema files. [0002](0002-api-schema.md) sets the
   direction; [0020](0020-desired-state-kinds.md) specifies the manifest kinds.
 - **REST + JSON, internal and external.** Services call each other over the same contract with mutual
-  TLS. There is no service-to-service gRPC. gRPC appears only between a host process and its own
-  plugins — `agent` and its plugin halves, and `provisioner` and its optional
-  plugin services ([0021](0021-plugin-extensibility.md)) — over the go-plugin protobuf contract in
-  `agent-plugin-sdk`, and always on a local transport that binds no port. A plugin channel is
-  not a service-to-service call and never leaves the host or pod; two plugins never connect to each
-  other.
+  TLS. gRPC appears only between a host process and its own plugins, over the plugin protobuf contract in
+  `agent-plugin-sdk`; a plugin channel never leaves the host or pod, and two plugins never connect to
+  each other:
+  - **Agent plugin halves** — the agent's executor launches each one through `hashicorp/go-plugin`,
+    which authenticates the channel with AutoMTLS because the agent launched the plugin. go-plugin
+    serves on a Unix domain socket on Linux and on loopback TCP on Windows, where it has no named-pipe
+    transport ([`serverListener`](https://github.com/hashicorp/go-plugin/blob/main/server.go)).
+  - **Provisioner plugin services** ([0021](0021-plugin-extensibility.md)) — ordinary Rackmarshal
+    services, not go-plugin children. Each enrolls with `identity` like any service, and `provisioner`
+    dials it with gRPC over a Unix domain socket (`AF_UNIX`, which Windows 10 1803 and Windows Server 2019
+    and later also provide; [AF_UNIX on Windows](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/))
+    with mutual TLS on SPIFFE IDs. This is the one service-to-service gRPC link; it binds no port.
 - **Paths** — `/<service>/<version>/<plural-resource>[/{id}]`, kebab-case segments, e.g.
   `/inventory/v1alpha1/endpoints/{endpointId}`. `gateway` routes on the first segment.
 - **Audience** — every operation declares `x-rackmarshal-audience` with one or more of `operator`, `agent`,
   `internal`. The gateway exposes `operator` operations on the operator ingress and `agent` operations on
   the agent ingress, and never routes `internal` ones.
+- **Security** — the documents are OpenAPI 3.0, which has no `mutualTLS` scheme and no role names in a
+  `security` requirement (both are 3.1). `common/v1` defines `bearerAuth` only; operator roles go in
+  `x-rackmarshal-roles`. `operator` operations list `bearerAuth` in `security`; `agent` and `internal`
+  operations declare `security: []` and rely on the audience, which the gateway and services enforce as
+  mutual TLS. A multi-audience operation lists `bearerAuth` when `operator` is one of its audiences, and
+  each caller is held to its own audience's credential ([0002](0002-api-schema.md)). Enrollment and health
+  take no credential and are allowlisted by `operationId`.
 - **Other extensions** — `x-rackmarshal-sensitive: true` on secret properties (never logged, redacted by
   the SDK); `x-rackmarshal-idempotent: true` on POST operations that are safe to retry.
 - **JSON** — lowerCamelCase properties and query parameters; RFC 3339 UTC timestamps; opaque string IDs;
@@ -98,14 +112,16 @@ a module, as 0001 is.
 - **Errors** — every non-2xx response is `application/problem+json`
   ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) with Rackmarshal members `code` (stable
   lower_snake_case, e.g. `endpoint_not_found`), `traceId`, and, for validation failures, `errors[]` of
-  `pointer` and `detail`. `type` is `<problem-base-url>/<code>`; the base URL is an open question in
-  0002. Problem bodies never carry secrets, stack traces, or another tenant's data.
+  `pointer`, `detail`, and an optional `code` (each policy violation's own code under `policy_denied`).
+  `type` is `<problem-base-url>/<code>`; the base URL is an open question in 0002. Problem bodies never
+  carry secrets, stack traces, or another tenant's data.
 
 ## Security and identity
 
 - **SPIFFE IDs** ([SPIFFE ID](https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE-ID.md)), one per
   certificate. No other path types without a design document:
-  - `spiffe://<environment-id>/service/<repository>` — e.g. `/service/inventory`
+  - `spiffe://<environment-id>/service/<repository>` — e.g. `/service/inventory`; a provisioner plugin
+    service is `/service/plugin-<name>` ([0021](0021-plugin-extensibility.md))
   - `spiffe://<environment-id>/agent/<agent-id>`
   - `spiffe://<environment-id>/control-node/<node-name>` — `infrastructure` control nodes
 - **ID syntax** — `<environment-id>` and `<agent-id>` are 128 random bits as 26 characters of lowercase,
@@ -142,9 +158,10 @@ a module, as 0001 is.
 
 - Loading follows the starters: defaults → YAML file → `<PREFIX>_*` variables → flags. YAML keys are
   lowerCamelCase; variables are upper snake case under the prefix (`RACKMARSHAL_INVENTORY_SERVER_HTTPS_PORT`).
-- Each executable's prefix is `RACKMARSHAL_` plus its repository name without `rackmarshal-`, upper-cased, hyphens
-  as underscores: `RACKMARSHAL_IDENTITY`, `RACKMARSHAL_SSO`, `RACKMARSHAL_GATEWAY`, `RACKMARSHAL_INVENTORY`, `RACKMARSHAL_CLI`,
-  `RACKMARSHAL_PROVISIONER`, `RACKMARSHAL_AGENT`. An agent plugin uses `RACKMARSHAL_PLUGIN_<NAME>`.
+- Each executable's prefix is `RACKMARSHAL_` plus its repository name, upper-cased, hyphens as
+  underscores: `RACKMARSHAL_IDENTITY`, `RACKMARSHAL_SSO`, `RACKMARSHAL_GATEWAY`, `RACKMARSHAL_INVENTORY`,
+  `RACKMARSHAL_CLI`, `RACKMARSHAL_PROVISIONER`, `RACKMARSHAL_AGENT`, `RACKMARSHAL_PORTAL`,
+  `RACKMARSHAL_CONSOLE`. An agent plugin uses `RACKMARSHAL_PLUGIN_<NAME>`.
 - Libraries define no prefix. Their config structs implement the starters' `FromEnv(prefix string)` and
   `Validate() error` and mount under fixed child keys: `logging` → `<PREFIX>_LOG_*` and
   `<PREFIX>_ACCESS_LOG_*`; `telemetry` → `<PREFIX>_TELEMETRY_*`; `environment` →
@@ -162,7 +179,8 @@ a module, as 0001 is.
   carry no environment configuration of their own.
 - Tier logic goes through `common`'s `environment` package: `Hardened()` is true for `production`
   and `staging`; last-resort features call `AllowLastResort("<feature>")`, which refuses in `production`
-  unless the kebab-case feature name is in `overrides`, and logs every override at `warn`.
+  unless the kebab-case feature name is in `overrides`, and logs every use: at `warn` in `production`
+  (an override) and at `info` in other tiers.
   `kek-sealed-ca-store` and `kek-sealed-signing-keys` ([0006](0006-identity.md)) are refused in
   `production` regardless of `overrides`.
 
@@ -184,7 +202,7 @@ defect, not a deployment note.
 
 | Work | Primitive | Why |
 |------|-----------|-----|
-| Idempotent and skippable — retention sweeps, cache refresh | `pg_try_advisory_lock`, skip the tick when not acquired | No lease table and no failover gap; the next tick catches up |
+| Idempotent and skippable — retention sweeps, cache refresh | `pg_try_advisory_xact_lock` inside the job's transaction (or a dedicated, pinned connection), skip the tick when not acquired | No lease table and no failover gap; the next tick catches up. A session-level `pg_try_advisory_lock` belongs to whichever pooled connection took it, so the unlock can run on another connection and the lock stays held until the pool closes it |
 | Must happen once per interval, and its absence is itself a signal — audit anchoring | An interval-keyed claim row with `INSERT … ON CONFLICT DO NOTHING` | The row records that the interval was handled, so a missing row is the alarm |
 | Per-item queues — reconciliation | `SELECT … FOR UPDATE SKIP LOCKED` with an owner and a lease expiry | A crashed worker's lease lapses without a reaper |
 

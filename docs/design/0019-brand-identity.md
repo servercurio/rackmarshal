@@ -23,19 +23,19 @@
 `rackmarshal` has held a brand mark at `docs/images/logo.svg` since the repository was created, and
 `.claude/conventions.md` protects it: one source of truth, no divergent copies, and `logo-mark.svg` must
 keep path data identical to it. What has never existed is anything downstream of the mark — no palette,
-no type system, no rule for which colour means failure. 0016 introduces three browser surfaces that all
+no type system, no rule for which color means failure. 0016 introduces three browser surfaces that all
 need those answers on the same day, and 0007's login site has needed them since it was written.
 
 **Goals**
 
-- Derive every colour from the existing mark rather than inventing a palette beside it.
+- Derive every color from the existing mark rather than inventing a palette beside it.
 - Publish contrast that was measured, so 0007's WCAG 2.2 AA commitment is checkable.
 - Name the states Rackmarshal actually has, not a generic success/warning/error triple.
 - Ship tokens in a form the UIs consume directly, so the documentation and the product cannot drift.
 
 **Non-goals**
 
-- Restyling the mark. Its geometry and colours are fixed; this document only describes how to use them.
+- Restyling the mark. Its geometry and colors are fixed; this document only describes how to use them.
 - A component library — 0016 owns the stack and defers extraction.
 - Marketing or website design. This is the product identity; the Hugo site may adopt it later.
 
@@ -44,8 +44,9 @@ need those answers on the same day, and 0007's login site has needed them since 
 ### The ramp
 
 The mark is a heat gradient: plum at the cool outer ring, rose through the middle, crimson where the
-metal is worked, and three sand-coloured sparks thrown clear of it. Five values come straight out of
-`docs/images/logo.svg`; the sixth is the ground they sit on.
+metal is worked, and three sand-colored sparks thrown clear of it. Four values come straight out of
+`docs/images/logo.svg`; the other two, Anvil and Quench, are derived grounds for the dark and light
+themes.
 
 | Name   | Hex       | Origin in the mark            | Role                                |
 |--------|-----------|-------------------------------|-------------------------------------|
@@ -56,13 +57,13 @@ metal is worked, and three sand-coloured sparks thrown clear of it. Five values 
 | Spark  | `#F7BB7A` | The three spark dots          | Highlight fill, focus ring on dark  |
 | Quench | `#FAF7F5` | Derived — warm off-white      | Light ground                        |
 
-Neutrals are biased toward plum rather than being pure grey, so a surface next to the mark reads as part
+Neutrals are biased toward plum rather than being pure gray, so a surface next to the mark reads as part
 of the same object. The full scale runs `#FFFFFF`, `#FAF7F5`, `#F2ECEA`, `#E6DCDD`, `#948089`, `#6B5560`,
 `#3D2730`, `#2A1218`.
 
 ### Plum carries action, not ember
 
-Crimson is the loudest value in the mark and also the universal colour of failure. A product whose
+Crimson is the loudest value in the mark and also the universal color of failure. A product whose
 primary buttons are crimson looks like a product in an incident, and leaves nothing distinct to signal an
 actual one. So:
 
@@ -80,36 +81,39 @@ Every pair below was computed from WCAG relative luminance rather than judged by
 4.5:1; control borders and focus indicators require 3:1 under
 [SC 1.4.11](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast).
 
-| Token           | Light     | On Quench | Dark      | On `#1F1016` |
-|-----------------|-----------|-----------|-----------|--------------|
-| `text`          | `#2A1218` | 16.43 AAA | `#F2E9E6` | 15.36 AAA    |
-| `text-muted`    | `#6B5560` | 6.36 AA   | `#B39BA3` | 7.11 AAA     |
-| `action`        | `#4D1229` | 13.73 AAA | `#D98A9B` | 7.04 AAA     |
-| `critical`      | `#B61F33` | 6.09 AA   | `#EA5468` | 5.22 AA      |
-| `warn`          | `#7E4E0F` | 6.60 AA   | `#E0A355` | 8.34 AAA     |
-| `ok`            | `#17795E` | 5.01 AA   | `#4FBF9B` | 8.09 AAA     |
-| `border-strong` | `#948089` | 3.45      | `#7C5763` | 3.16         |
-| `border`        | `#E6DCDD` | 1.26      | `#37222A` | 1.32         |
+| Token           | Light     | On Quench | Dark      | On surface `#1F1016` | On Anvil `#15090E` |
+|-----------------|-----------|-----------|-----------|----------------------|--------------------|
+| `text`          | `#2A1218` | 16.43 AAA | `#F2E9E6` | 15.36 AAA            | 16.31 AAA          |
+| `text-muted`    | `#6B5560` | 6.36 AA   | `#B39BA3` | 7.11 AAA             | 7.55 AAA           |
+| `action`        | `#4D1229` | 13.73 AAA | `#D98A9B` | 7.04 AAA             | 7.48 AAA           |
+| `critical`      | `#B61F33` | 6.09 AA   | `#EA5468` | 5.22 AA              | 5.54 AA            |
+| `warn`          | `#7E4E0F` | 6.60 AA   | `#E0A355` | 8.34 AAA             | 8.86 AAA           |
+| `ok`            | `#17795E` | 5.01 AA   | `#4FBF9B` | 8.09 AAA             | 8.59 AAA           |
+| `border-strong` | `#948089` | 3.45      | `#8C6673` | 3.73                 | 3.96               |
+| `border`        | `#E6DCDD` | 1.26      | `#37222A` | 1.25                 | 1.32               |
 
-Three of these values exist because the first candidate failed:
+Four of these values exist because the first candidate failed:
 
 - `warn` began at `#B8741F` and measured **3.54 on Quench**, below AA. It darkened to `#7E4E0F`.
 - Dark `critical` began at `#E14356` and measured **4.49 on the raised surface**, below AA. It lifted to
   `#EA5468`.
 - A single `border` token measured **1.26** — fine for a rule, far below the 3:1 an input edge needs —
-  so the system carries a separate `border-strong` used on every control boundary.
+  so the system carries a separate `border-strong` used on every control boundary. `border` stays
+  decorative-only in both themes.
+- Dark `border-strong` began at `#7C5763` and measured **2.97 on the surface**, below 3:1 (it reached
+  3.16 only on Anvil). It lifted to `#8C6673`.
 
 Two usage rules fall out of the measurements. **Spark is never text on a light ground** — at 1.59 it
 is a fill, with Anvil text on it at 11.46. And **a dark-theme critical button takes an Anvil label, not
 white**: white on `#EA5468` is 3.52 and fails, while Anvil on the same fill is 5.54 and passes. It is the
-only place in the system where a label colour flips with the theme.
+only place in the system where a label color flips with the theme.
 
 ### Rackmarshal's own state vocabulary
 
 A generic success/warning/error triple would not cover what these surfaces must show.
 
 **Endpoint drift** — the four values `provisioner` stores in `endpoint_status`
-([0011](0011-provisioner.md)), rendered as a pill with the word always present, never colour alone:
+([0011](0011-provisioner.md)), rendered as a pill with the word always present, never color alone:
 
 | State     | Token      | Meaning                                       |
 |-----------|------------|-----------------------------------------------|
@@ -131,7 +135,7 @@ stripe rather than a filled badge, because it is ambient context rather than an 
 
 ### Type
 
-| Role    | Face          | Weights   | Licence | Carries                                     |
+| Role    | Face          | Weights   | License | Carries                                     |
 |---------|---------------|-----------|---------|---------------------------------------------|
 | Display | Archivo       | 500–700   | OFL 1.1 | Headings, the masthead, numerals in tiles   |
 | Body    | IBM Plex Sans | 400–600   | OFL 1.1 | Running text, labels, tables                |
@@ -142,8 +146,10 @@ serials, SHA-256 digests, and environment IDs in 26 characters of unpadded base3
 misread character is a real operational error. Digits that line up in columns use
 `font-variant-numeric: tabular-nums`.
 
-The scale is a 1.25 ratio from a 16px base: 12, 14, 16, 20, 25, 31, 39, 49 px. Uppercase labels carry
-`0.12em` tracking; headings set `text-wrap: balance`.
+The scale is a 1.25 ratio up from a 16px base: 16, 20, 25, 31, 39, 49 px. The two small steps, 12 and
+14 px, are off the ratio (it would give 12.8 and 10.24 px); they are fixed sizes chosen for legibility
+at label and secondary-text sizes. Uppercase labels carry `0.12em` tracking; headings set
+`text-wrap: balance`.
 
 One discrepancy is recorded rather than quietly fixed: the tagline inside `logo.svg` is set in Open Sans,
 which is not part of this system. Re-setting it in Archivo would change the mark file, which conventions
@@ -178,7 +184,7 @@ or a generic server would misinform:
 | `agent`            | The daemon on a managed host (0012)             | Chassis with two sparks from the mark |
 | `plugin`           | A separate process the agent launches (0013)    | Parent and child with a link          |
 | `directive-bundle` | The signed DSSE envelope agents pull (0011)     | Package with a seal                   |
-| `environment`      | The trust domain and its identity               | Open ring with a centre, as the mark  |
+| `environment`      | The trust domain and its identity               | Open ring with a center, as the mark  |
 | `enrollment-token` | The single-use credential that enrolls a host   | Ticket with a punch                   |
 | `drift`            | Applied state diverged from desired             | Dashed outline with a solid offset    |
 
@@ -191,8 +197,8 @@ column of a dense table. Every icon-only control carries an accessible name and 
 control is at least a 24 × 24 target inside a 44 × 44 hit area. Two limits keep this from eroding:
 
 - **State always keeps its word.** Drift and tier render their label; an icon may accompany it, never
-  replace it. This is the browser counterpart of 0010's rule that every status is a word and colour only
-  repeats it, and icon shape is no more reliable than colour for someone who has not learned the set.
+  replace it. This is the browser counterpart of 0010's rule that every status is a word and color only
+  repeats it, and icon shape is no more reliable than color for someone who has not learned the set.
 - **Destructive controls always keep their label.** Retire, revoke, and delete are never icon-only,
   anywhere, at any width.
 
@@ -208,7 +214,7 @@ stays byte-identical, which `.claude/conventions.md` already requires.
 
 The lockup is three parts on a `0 0 1699 420` canvas:
 
-| Part     | Content                                     | Colour                        |
+| Part     | Content                                     | Color                         |
 |----------|---------------------------------------------|-------------------------------|
 | Mark     | Three rings and three sparks                | The full ramp                 |
 | Wordmark | "Server" then "Curio", drawn as paths       | Ember, then Plum              |
@@ -220,13 +226,13 @@ never re-set in a typeface or retyped — including in Archivo, which would othe
 consistent choice.
 
 **Which to use.** The lockup wherever Rackmarshal introduces itself and there is room for it to be read: a
-README, a login page, a document cover. The symbol alone wherever it is recognised rather than read: a
+README, a login page, a document cover. The symbol alone wherever it is recognized rather than read: a
 favicon, an avatar, a collapsed sidebar rail, an app icon.
 
 - **Clear space** — at least the outer ring's stroke width on all four sides, for both assets.
 - **Minimum size** — 240 px wide for the lockup, below which the tagline stops being legible; 24 px for
-  the symbol, below which the three sparks close up and a single-colour silhouette should be used.
-- **Never** — stretch or condense, recolour the ramp, add shadow or glow, rotate or flip, place it on a
+  the symbol, below which the three sparks close up and a single-color silhouette should be used.
+- **Never** — stretch or condense, recolor the ramp, add shadow or glow, rotate or flip, place it on a
   ground that drops contrast below 3:1, re-space the mark against the wordmark, retype the wordmark in a
   font, or recreate any of it in another tool.
 
@@ -253,7 +259,7 @@ carry a Plum cabinet, the dark files a Quench one. The badge is Spark in both. T
 the file matching its ground.
 
 **The lockup wordmark is two-tone, the same move the Server Curio wordmark makes.** "Server" is Ember and
-"Curio" is Plum; "Rack" takes the hot value and "marshal" the deep one, so the two lockups are recognisably
+"Curio" is Plum; "Rack" takes the hot value and "marshal" the deep one, so the two lockups are recognizably
 the same construction. The accent flips by theme because neither value survives both grounds — Spark
 measures `1.59` on Quench, Ember `3.00` on Anvil — so Spark stands in for Ember on dark exactly as
 `--focus` already does in `tokens.css`:
@@ -279,13 +285,13 @@ not a re-setting of the type: the glyph run is partitioned between the `k` and t
 elements that carry different fills and identical `transform` and curve data, so the outlines are
 byte-for-byte what the kit produced.
 
-- **Never** — put a light mark on a dark ground or the reverse, recolour outside the ramp, lock the
+- **Never** — put a light mark on a dark ground or the reverse, recolor outside the ramp, lock the
   Rackmarshal mark up with the Server Curio mark, stretch or condense it, separate the badge from the
-  cabinet, move the wordmark's colour break off the `k`/`m` boundary, or reduce the icon below 32 px.
+  cabinet, move the wordmark's color break off the `k`/`m` boundary, or reduce the icon below 32 px.
 
 ### Distribution
 
-| Artefact            | Path                            | Consumed by                     |
+| Artifact            | Path                            | Consumed by                     |
 |---------------------|---------------------------------|---------------------------------|
 | Tokens              | `docs/design/brand/tokens.css`  | Every surface in 0016           |
 | Reference page      | `docs/design/brand/index.html`  | Humans                          |
@@ -305,9 +311,9 @@ palette, `prefers-color-scheme` redefines tokens for viewers on the system defau
 ## Alternatives considered
 
 - **A blue or teal accent** — the conventional infrastructure-product palette, and a neutral backdrop
-  for crimson state colours. Rejected because it would mean the product shares no colour with its own
+  for crimson state colors. Rejected because it would mean the product shares no color with its own
   mark.
-- **Ember as the action colour** — the most direct reading of the mark. Rejected above; it makes every
+- **Ember as the action color** — the most direct reading of the mark. Rejected above; it makes every
   page read as an incident and leaves failure nothing to say.
 - **Inter, or Inter with a geometric display face** — the safe pairing. Rejected as the default that
   every dashboard already uses; Archivo has more character at display sizes and IBM Plex has an

@@ -12,7 +12,7 @@ alternatives considered, and tracks its status as the decision matures.
 | #                                      | Title                  | Status | Date       |
 |----------------------------------------|------------------------|--------|------------|
 | [0001](0001-project-repositories.md)   | Project Repositories   | Draft  | 2026-07-11 |
-| [0002](0002-api-schema.md)             | api-schema             | Draft  | 2026-09-15 |
+| [0002](0002-api-schema.md)             | api-schema             | Draft  | 2026-09-18 |
 | [0003](0003-sdk.md)                    | sdk                    | Draft  | 2026-09-15 |
 | [0004](0004-common.md)                 | common                 | Draft  | 2026-09-15 |
 | [0005](0005-infrastructure.md)         | infrastructure         | Draft  | 2026-09-15 |

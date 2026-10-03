@@ -134,8 +134,10 @@ with `result_invalid`; it never fails the report.
 #### Provisioner-side services
 
 A plugin may ship an optional provisioner service alongside its required bundle (0021). It speaks the
-same protobuf package, versioned with it, and `provisioner` launches it as a separate process
-over a local socket:
+same protobuf package, versioned with it, but it is an ordinary Rackmarshal service, not a go-plugin
+plugin: it enrolls with `identity` as `spiffe://<environment-id>/service/plugin-<name>`, runs under its
+own lifecycle, and `provisioner` dials it with gRPC over a Unix domain socket with mutual TLS on SPIFFE
+IDs. `host`, `serve.Main`, and go-plugin's launch-time protections play no part in it:
 
 ```proto
 service ProvisionerPluginService {
@@ -360,15 +362,33 @@ plan, err := p.Resources().PlanResource(ctx, &pluginv1alpha1.PlanResourceRequest
 `p.Verifier()` returns a `VerifierService` client only when `Config.Core` is true and the manifest
 declares `core: true` and `verifier:sigstore`; otherwise it returns `ErrNotCoreVerifier`.
 
-| go-plugin setting  | `host.Launch` value               | Reason                                         |
-|--------------------|-----------------------------------|------------------------------------------------|
-| `AllowedProtocols` | gRPC only                         | no `net/rpc` gob decoding                      |
-| `SecureConfig`     | caller's SHA-256, required        | 0001; constant-time compare (`client.go`)      |
-| `AutoMTLS`         | `true`                            | other local processes cannot use the socket    |
-| `SkipHostEnv`      | `true`                            | agent credentials and proxies not inherited    |
-| `UnixSocketConfig` | agent-owned `0700` directory      | socket unreachable by other users              |
-| `Logger`           | `hclog.NewNullLogger()`           | the SDK does not log; lines go to `Stderr`     |
-| `RunnerFunc`       | optional, from the caller         | isolation is 0012's, through `SysProcAttr`     |
+| go-plugin setting  | `host.Launch` value               | Reason                                        |
+|--------------------|-----------------------------------|-----------------------------------------------|
+| `AllowedProtocols` | gRPC only                         | no `net/rpc` gob decoding                     |
+| `SecureConfig`     | caller's SHA-256, required        | 0001; constant-time compare (`client.go`)     |
+| `AutoMTLS`         | `true`                            | other processes cannot use the socket or port |
+| `SkipHostEnv`      | `true`                            | agent credentials and proxies not inherited   |
+| `UnixSocketConfig` | `TempDir`, the plugin's `Group`   | a per-plugin socket directory (below)         |
+| `Logger`           | `hclog.NewNullLogger()`           | the SDK does not log; lines go to `Stderr`    |
+| `RunnerFunc`       | always set; applies `SysProcAttr` | 0012's isolation; enables the directory       |
+
+**Socket directory.** Each plugin runs as its own user (0012), so a root-only `0700` directory would
+leave it nowhere to create its socket. For each launch, go-plugin creates a `plugin-dir*` directory
+under `TempDir`, owned by the executor, and, with `Group` set to the plugin's own group
+(`rackmarshal-plugin-<name>`), gives it that group and mode `0770`; the plugin's listener then sets its
+socket to the group with mode `0660`. Only the executor and that plugin's user can reach it, and
+go-plugin removes the directory when the plugin is killed. go-plugin creates this directory only when
+`RunnerFunc` is set, which is why `host.Launch` always sets one
+([`client.go`](https://github.com/hashicorp/go-plugin/blob/v1.8.0/client.go),
+[`server.go`](https://github.com/hashicorp/go-plugin/blob/v1.8.0/server.go)).
+
+**Transport.** go-plugin serves on that Unix socket on Linux and macOS, and on loopback TCP
+(`127.0.0.1`, a port from `PLUGIN_MIN_PORT`–`PLUGIN_MAX_PORT`) on Windows, where it has no named-pipe
+transport (`serverListener` in `server.go`), so the directory settings do not apply there. AutoMTLS
+authenticates the channel on every platform, because the agent launched the plugin: the host passes its
+client certificate in the plugin's environment and reads the plugin's server certificate from the
+handshake line, so no other process holds either. On Windows it is the only thing keeping other local
+processes off the port.
 
 `host` requires an absolute path to a regular file. On Unix, the file and its parent directories must
 not be writable by group or others. When the caller sets a proxy address and token in `host.Config`,

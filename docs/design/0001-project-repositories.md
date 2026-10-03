@@ -66,17 +66,17 @@ cross-repo coordination (the shared API contract and SDK exist precisely to abso
    external IdP (Okta / Auth0 / SAML / OIDC)
                 │
                 ▼
-            sso ──────────────────► identity (internal SAML/OIDC IdP, accounts,
-                                                ▲        tokens, RBAC, tenancy)
-                                                │
-   cli (operator) ──┐                     │
-   3rd-party clients ─────┼─ sdk ─► gateway
-   agent ───────────┘                     │
-     │  ▲           ┌───────────────────────────┼───────────────────┐
-     │  │           ▼                           ▼                   ▼
-     │  │    inventory            provisioner  (other domain services…)
-     │  │                                   │       │
-     │  └── desired-state directives ───────┘       └──► agentless devices (device APIs)
+               sso ───────────────► identity (internal SAML/OIDC IdP, accounts,
+                                       ▲      tokens, RBAC, tenancy)
+                                       │
+   cli (operator) ──────┐              │
+   3rd-party clients ───┼── sdk ──► gateway
+   agent ───────────────┘              │
+     │  ▲          ┌───────────────────┼───────────────────────────┐
+     │  │          ▼                   ▼                           ▼
+     │  │      inventory          provisioner          (other domain services…)
+     │  │                             │   │
+     │  └── desired-state directives ─┘   └──► agentless devices (device APIs)
      ▼
    agent plugins (separate processes, built on agent-plugin-sdk)
 
@@ -151,8 +151,8 @@ is covered by exactly one path with no overlapping authority.
 to deploy Rackmarshal itself:
 
 - **Custom YAML** — Rackmarshal's own schema describing the desired state of managed endpoints. Every
-  document declares an `apiVersion` (e.g. `rackmarshal.servercurio.com/v1alpha1`) and a `kind`, and the JSON
-  Types for each version live in `api-schema`, which generates the published documents.
+  document declares an `apiVersion` (e.g. `rackmarshal.servercurio.com/v1alpha1`) and a `kind`, and the Go
+  types for each version live in `api-schema`, which generates the published documents.
 - **OPA policies** — Rego policies that validate and authorize directives, evaluated by OPA embedded as
   a Go library in both services: `provisioner` checks directives when they are written and before
   dispatch, and `agent` re-checks them on the host before enforcing. OPA returns policy
@@ -169,7 +169,7 @@ to deploy Rackmarshal itself:
   and tenancy.
 - **`sso`** is the federation broker that fronts login. It authenticates users either against the
   internal `identity` IdP *or* via SAML/OIDC token exchange with an external IdP (Okta, Auth0, …).
-  Either path resolves to a `identity` principal.
+  Either path resolves to an `identity` principal.
 - **Tokens are environment-bound.** Both services sign tokens with keys belonging to the environment
   and include its environment ID; see [Environment identity](#environment-identity).
 
@@ -199,14 +199,14 @@ A new agent bootstraps as follows, modeled on
 1. **Create a token.** An operator creates an enrollment token with `cli`. It is single-use, valid
    for 1 hour by default (operators may set up to 24 hours per token for batch provisioning), bound to an
    environment, a tenant, and optional host labels, and carries the environment ID and the SHA-256 hash
-   of that environment's CA certificate.
+   of that environment's root CA certificate.
 2. **Generate a key on the host.** `agent` generates its private key locally, and the key never
    leaves the host. It is stored in the TPM or OS keystore when one is available, otherwise in a file
    readable only by the agent's user.
 3. **Verify the gateway.** The agent connects to the enrollment route on the agent ingress over regular
-   TLS and checks the gateway's certificate chain against the CA hash from the token, and its SPIFFE ID
-   against the token's environment ID. This is the only
-   route on the agent ingress that does not require a client certificate.
+   TLS and checks the gateway's certificate chain against the root CA hash from the token, and its
+   SPIFFE ID against the token's environment ID. This is the only route on the agent ingress that does
+   not require a client certificate.
 4. **Request a certificate.** The agent sends a certificate signing request (CSR) with the token.
    `identity` validates the token, marks it used, and returns a certificate signed by the
    intermediate CA that carries the agent's SPIFFE ID (`spiffe://<environment-id>/agent/<agent-id>`).
@@ -253,10 +253,11 @@ Two kinds of plugins are trusted differently:
   with its environment service certificate. Before install, the downloaded digest must match the pin and
   the core `sigstore` validator must verify the release's Sigstore bundle against that identity, using a
   trusted root verified through [TUF](https://theupdateframework.github.io/specification/latest/). The
-  unprivileged agent process asks the privileged executor to launch the validator in `refresh` mode,
-  whose only egress is to Sigstore's TUF repository or a configured mirror, through the agent's egress
-  proxy; the executor, which has no network beyond localhost, verifies the metadata
-  ([0012](0012-agent.md)).
+  unprivileged agent process asks the privileged executor — the agent's second process, which runs with
+  host privileges but no network, enforces directives, and launches plugins ([0012](0012-agent.md)) — to
+  launch the validator in `refresh` mode, whose only egress is to Sigstore's TUF repository or a
+  configured mirror, through the agent's egress proxy; the executor, which has no network beyond
+  localhost, verifies the metadata.
 
 The privileged executor launches every plugin process. Before every launch, in every tier, it re-checks
 the core signature, or the bundle pin and its Sigstore verification, so no unsigned local plugin ever
@@ -421,7 +422,7 @@ deployment:
 
 ### License headers and license files
 
-Every Rackmarshal repository — `rackmarshal`, each `rackmarshal-*` repository, and the `go-*-starter` baselines they are
+Every repository — `rackmarshal`, each Rackmarshal repository, and the `go-*-starter` baselines they are
 seeded from — carries an Apache-2.0 `LICENSE` file at its root, and every tracked file starts with an
 [SPDX license identifier](https://spdx.dev/learn/handling-license-info/) in its own comment syntax:
 
@@ -470,7 +471,7 @@ A suggested order that keeps each step shippable and unblocks the next:
    (`agent-plugin-sdk`, `agent-plugins`, `plugin-starter`).
 6. **Browser surfaces** — `portal` and `console` ([0016](0016-web-ui-architecture.md)),
    after the APIs they render exist. Neither is on the critical path: `cli` covers every
-   operation, so the portals are additive.
+   operation, so the web UIs are additive.
 
 ## Resolved decisions
 
@@ -498,8 +499,8 @@ Answers to this document's earlier open questions (2026-09-14 to 2026-09-15). Th
 - **Trust zones** — A dedicated mutual-TLS agent ingress on `gateway`, with per-agent certificates
   issued by `identity`, kept apart from the operator and third-party entry point.
 - **Agent enrollment** — `identity` runs an internal CA and signs CSRs presented with a single-use
-  enrollment token created in `cli` (1 hour by default, 24 hours maximum); the token pins the CA
-  hash for first contact. The intermediate CA key lives in an HSM or cloud KMS, which `production`
+  enrollment token created in `cli` (1 hour by default, 24 hours maximum); the token pins the root
+  CA hash for first contact. The intermediate CA key lives in an HSM or cloud KMS, which `production`
   requires; a store sealed with a KEK from an external secret manager is a last resort for testing and
   staging only. Agent keys are generated on the host and
   hardware-backed when available. Certificates last 30–90 days per tenant (default 30) and renew at

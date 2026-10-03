@@ -88,9 +88,10 @@ agent-plugins/
 - { name: services, core: true,  platforms: [linux/amd64, linux/arm64] }
 ```
 
-- **Why one module** — plugins are executables nobody imports. One `go.mod` means one set of
-  dependency versions (one gRPC version), one Dependabot stream, and one `govulncheck` run. Go links
-  only imported packages, so a dependency added for `sysfacts` stays out of `packages`.
+- **Why one module** — plugins are executables nobody imports. One `go.mod` for the plugins means one
+  set of dependency versions (one gRPC version), one Dependabot `gomod` stream for every plugin, and one
+  `govulncheck` run; the nested, test-only `e2e` module adds a second stream. Go links only imported
+  packages, so a dependency added for `sysfacts` stays out of `packages`.
 - **Isolation** — a golangci-lint `depguard` rule forbids imports between plugin trees and keeps
   sigstore-go out of every tree but `internal/sigstore`. `deps/<name>.allow` is checked against
   `go list -deps -f '{{with .Module}}{{.Path}}{{end}}' ./cmd/rackmarshal-plugin-<name>`.
@@ -129,10 +130,10 @@ agent-plugins/
   renamed.
 - **`services`** — `Service` (`name`, `state`, `enabled`). `Plan` reads
   `systemctl show --property=ActiveState,UnitFileState`; `Apply` calls `systemctl`. systemd only.
-- **Why these four** — package, file, and service cover basic server convergence, much like the core
-  modules of configuration-management tools such as Ansible's builtin `package`, `copy`, and `service`
-  (not re-checked). Separate binaries keep the unprivileged fact collector away from root and network
-  grants.
+- **Why these three resource plugins** — package, file, and service cover basic server convergence,
+  much like the core modules of configuration-management tools such as Ansible's builtin `package`,
+  `copy`, and `service` (not re-checked). Separate binaries keep the unprivileged fact collector away
+  from root and network grants.
 - **Why these are core** — `sigstore` must be present before any other plugin can be installed, and
   `sysfacts` lets every agent report facts before its first bundle. The agent core has no built-in
   handlers, so `packages`, `files`, and `services` are bundled too: every agent can converge basic
@@ -270,6 +271,7 @@ The release job installs cosign first. `task sign` and `task verify` run:
 ```sh
 repo=rackmarshal/agent-plugins
 wf=.github/workflows/800-call-semantic-release.yaml
+# f: one asset name, e.g. rackmarshal-plugin-files-linux-amd64; the tasks run this per asset
 cosign sign-blob --yes --bundle "bin/${f}.sigstore.json" "bin/${f}"
 cosign verify-blob "bin/${f}" --bundle "bin/${f}.sigstore.json" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -387,8 +389,8 @@ current, and when the SDK drops a protocol, plugins keep serving N-1 until the a
 
 ## Alternatives considered
 
-- **Module per plugin** (`go.work`) — four Dependabot streams and possible gRPC skew, with no consumer
-  benefit.
+- **Module per plugin** (`go.work`) — five plugin Dependabot streams instead of one, and possible gRPC
+  skew, with no consumer benefit.
 - **Repository per plugin** — contradicts 0001's single `agent-plugins` repository.
 - **Per-plugin versions with semantic-release-monorepo** — misses dependency fixes made at the root.
 - **One multi-call binary** — every plugin would link every dependency and share one digest, and fact

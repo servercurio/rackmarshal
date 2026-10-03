@@ -47,12 +47,12 @@ change, and approving it — are exactly the ones that benefit from a rendered p
 
 - Render the tenant's endpoints, their facts, labels, history, and drift state from `inventory`.
 - Render desired state from `provisioner`: directive sets, policies, scripts, device connections.
-- Accept a document by file or paste, validate it against its JSON Schema before it leaves the browser,
-  and author a new `DirectiveSet` through a guided flow.
+- Accept a document by file or paste, validate it against its JSON Schema in the portal before it reaches
+  the gateway, and author a new `DirectiveSet` through a guided flow.
 - Run and display plans, and apply them after explicit confirmation.
 - Show reconciliation and enforcement history, including failures with the reason.
-- Let tenant administrators create, list, and revoke enrollment tokens and API tokens for their tenant;
-  creating an enrollment token requires step-up.
+- Let tenant administrators create, list, and revoke enrollment tokens for their tenant; creating one
+  requires step-up. Let every signed-in user create, list, and revoke their own API tokens.
 - Nothing else. Every write is a call the gateway already exposes to the `operator` audience.
 
 ### Interfaces
@@ -83,7 +83,8 @@ on submit.
 #### The plan screen
 
 This is the screen that justifies the surface. `POST /provisioner/v1alpha1/plans` already returns the
-affected endpoints and the diff (0011); the portal renders it as the middle step of a three-step flow:
+affected endpoints and the diff (0011); the portal renders it across the plan and review stages of a
+four-stage flow:
 
 ```
 select documents ──► plan (no writes) ──► review diff ──► apply
@@ -93,7 +94,7 @@ select documents ──► plan (no writes) ──► review diff ──► appl
 ```
 
 - Diffs render per endpoint and per resource, additions and removals distinguished by symbol and label
-  rather than colour alone.
+  rather than color alone.
 - A policy denial is shown where it happened, naming the rule, because 0011 surfaces `policy_denied` with
   the decision rather than a generic failure.
 - Conflicts — two sets targeting one endpoint with the same kind and name, which 0011 reports at plan
@@ -115,7 +116,10 @@ environments open needs an interruption that is hard to perform by reflex.
 
 Drift and reconciliation status change while a page is open. The portal polls with htmx
 (`hx-trigger="every 30s"`) on the fragments that carry state, and pauses polling when the document is
-hidden. This is deliberately the simplest mechanism that works; 0016 records server-sent events as an
+hidden. htmx runs with `allowEval: false` (0016), so the pause cannot be an `[!document.hidden]` trigger
+filter; a small first-party script served from `'self'` cancels `htmx:beforeRequest` for polling
+fragments while `document.hidden` is true and refreshes them once on the `visibilitychange` back to
+visible. This is deliberately the simplest mechanism that works; 0016 records server-sent events as an
 open question rather than adopting them before there is evidence they are needed.
 
 ### Dependencies
