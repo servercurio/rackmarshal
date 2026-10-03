@@ -52,12 +52,14 @@
 
   /* ---- Action ---- *
    * Plum carries primary actions, not ember. Crimson is both the brand color
-   * and the conventional error color; reserving ember for the mark and for
-   * critical state removes that collision instead of living with it. */
+   * and the conventional error color; reserving ember for the mark, the wordmark,
+   * critical state and destructive actions removes that collision instead of
+   * living with it. */
   --action: var(--sc-plum); /* 13.73:1 on bg  AAA */
   --action-hover: #3A0E1F;
   --action-text: var(--sc-neutral-00);
-  --focus: var(--sc-ember); /*  6.09:1 on bg — focus ring */
+  /* Focus is blue, off the ramp: distinct in hue from plum action and from ember failure. */
+  --focus: #1F5BC4; /*  5.87:1 on bg, 6.27:1 on surface — focus ring */
 
   /* ---- Semantic state ---- */
   --ok: #17795E; /*  5.01:1 on bg  AA  */
@@ -71,11 +73,15 @@
 
   /* ---- Environment tiers ----
    * Rackmarshal components are environment-aware (CONVENTIONS, "Environment"). The
-   * tier is shown on every authenticated surface, so it needs its own ramp. */
-  --tier-production: var(--sc-ember);
-  --tier-staging: #7E4E0F;
-  --tier-test: #17795E;
-  --tier-development: var(--sc-neutral-60);
+   * tier is shown on every authenticated surface, so it needs its own ramp — four
+   * hues kept clear of ember and of ok/warn/critical/unknown, so a tier never reads
+   * as a state. Production is the most saturated and highest-contrast of the four.
+   * Each colors a 3px stripe and its label on --surface-sunken; ratios are on
+   * bg / surface / surface-sunken. */
+  --tier-production: #8A1866; /*  8.19 / 8.74 / 7.47 — plum-magenta */
+  --tier-staging: #5B3FA0; /*  7.39 / 7.88 / 6.74 — violet */
+  --tier-test: #2F5E8A; /*  6.37 / 6.80 / 5.81 — slate blue */
+  --tier-development: #6B6B6B; /*  5.00 / 5.33 / 4.56 — neutral gray */
 
   /* ---- Type ---- */
   --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
@@ -126,7 +132,7 @@
     --action: #D98A9B; /*  7.04:1 on surface AAA */
     --action-hover: #E9A3B2;
     --action-text: var(--sc-anvil); /*  7.48:1 — anvil label, never white */
-    --focus: var(--sc-spark); /* 10.79:1 on surface */
+    --focus: var(--sc-spark); /* 10.79:1 on surface, 11.46:1 on bg */
 
     --ok: #4FBF9B; /*  8.09:1 on surface AAA */
     --warn: #E0A355; /*  8.34:1 on surface AAA */
@@ -137,10 +143,11 @@
     --critical-fill: #3A1620;
     --unknown-fill: #2A1A20;
 
-    --tier-production: #EA5468;
-    --tier-staging: #E0A355;
-    --tier-test: #4FBF9B;
-    --tier-development: #B39BA3;
+    /* ratios on bg / surface / surface-sunken */
+    --tier-production: #F28BD6; /*  8.76 / 8.25 / 8.97 */
+    --tier-staging: #9E8BE0; /*  6.70 / 6.31 / 6.87 */
+    --tier-test: #7AA6D6; /*  7.66 / 7.21 / 7.84 */
+    --tier-development: #8F8F8F; /*  6.03 / 5.68 / 6.17 */
 
     --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
     --shadow-overlay: 0 8px 28px rgba(0, 0, 0, 0.6);
@@ -173,10 +180,10 @@
   --critical-fill: #3A1620;
   --unknown-fill: #2A1A20;
 
-  --tier-production: #EA5468;
-  --tier-staging: #E0A355;
-  --tier-test: #4FBF9B;
-  --tier-development: #B39BA3;
+  --tier-production: #F28BD6;
+  --tier-staging: #9E8BE0;
+  --tier-test: #7AA6D6;
+  --tier-development: #8F8F8F;
 
   --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
   --shadow-overlay: 0 8px 28px rgba(0, 0, 0, 0.6);

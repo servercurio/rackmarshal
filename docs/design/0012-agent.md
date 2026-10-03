@@ -105,15 +105,19 @@ the host is re-enrolled.
   bundle's `coreKeyId` and revocation list are recorded with the same monotonicity: a bundle may move the
   current core key forward or add revocations, never move back or drop them, so a replayed older bundle
   cannot restore a retired or revoked key.
-- **Validate** each resource against its JSON Schema — embedded from `api-schema` for the kinds it
-  defines, and from the plugin's provisioner bundle for a plugin kind
-  ([0021](0021-plugin-extensibility.md)). The provisioner validated the same specs before signing; the
-  agent validates them again on accept, because neither end relies on the other having checked. A
-  failure rejects the bundle and keeps the previous generation.
+- **Validate** each resource against its JSON Schema — embedded in the agent from `api-schema` for the
+  kinds it defines, and carried in the directive bundle for a plugin kind. For each plugin kind the
+  host's resources use, the provisioner copies that kind's schema, its result schema if it has one, and
+  the plugin's `host`-phase Rego from the plugin's verified provisioner bundle into the directive bundle
+  it signs ([0011](0011-provisioner.md), [0021](0021-plugin-extensibility.md)), so the DSSE signature
+  covers them. The agent validates and evaluates from the directive bundle alone and never downloads a
+  provisioner bundle. A plugin kind with no schema in the bundle fails validation. The provisioner
+  validated the same specs before signing; the agent validates them again on accept, because neither end
+  relies on the other having checked. A failure rejects the bundle and keeps the previous generation.
 - **Policy** — OPA evaluates, in order, the embedded agent baseline (for example, deny kinds disabled in
   local config), root-owned local policies in `/etc/rackmarshal-agent/policy.d/*.rego` that may only add
-  denials, each verified plugin's `host` policies scoped to the kinds that plugin was granted
-  (0021), and the bundle's `host` policies. Same contract, capability filter, and 500 ms deadline as
+  denials, each plugin's `host` policies from the bundle, scoped to the kinds that plugin was granted
+  (0021), and the bundle's own `host` policies. Same contract, capability filter, and 500 ms deadline as
   0011; an error or any `deny` rejects the whole bundle.
 - **Scripts** — `host`-phase Tengo with the same allowlist and limits as 0011. The `rackmarshal` module exposes
   read-only host `facts()`; scripts compute values and never act.
@@ -134,10 +138,10 @@ the host is re-enrolled.
 - **Reports** — per resource: status, a digest of observed state (never file content), timings, a
   `reportId`, and a plugin's bounded `result_json` when it returned one
   ([0021](0021-plugin-extensibility.md)), posted to
-  `POST /provisioner/v1alpha1/enforcement-reports`. The agent validates a result against the schema in
-  that plugin's bundle before queueing it, caps a report's results at 256 KiB, and sets
-  `result_truncated` rather than dropping the report. Results count against `outbox.maxBytes` like
-  anything else in the spool.
+  `POST /provisioner/v1alpha1/enforcement-reports`. The agent validates a result against the result
+  schema the directive bundle carries for that kind before queueing it, caps a report's results at
+  256 KiB, and sets `result_truncated` rather than dropping the report. Results count against
+  `outbox.maxBytes` like anything else in the spool.
 
 #### Inventory
 
@@ -236,6 +240,12 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
   Linux, `serve.Main` (0013) makes each plugin process non-dumpable (`PR_SET_DUMPABLE` set to 0,
   [prctl(2)](https://man7.org/linux/man-pages/man2/prctl.2.html)) before it reads anything from the
   agent, so no other unprivileged process can attach to it or read its memory.
+- **Path grants** — a plugin's filesystem grant is its manifest's `privileges.paths` narrowed by
+  `plugins.grants` (0013). When a plugin requests `write` on its own state directory,
+  `/var/lib/rackmarshal-plugin-<name>`, the executor creates that directory at install, owned by
+  `rackmarshal-plugin-<name>` with mode `0700`, and removes it with the user at uninstall; no operator
+  listing is needed for it. Every other path must be listed in `plugins.grants`, and the executor never
+  changes the owner or mode of a path it did not create.
 - **Limits** — on Linux, each plugin starts in its own child cgroup (`SysProcAttr.UseCgroupFD`) under
   the executor's delegated subtree, with `memory.max`, `cpu.max`, and `pids.max`. On Windows, a Job
   Object (`CreateJobObject`, `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`). On macOS, `setrlimit` only.
@@ -266,24 +276,41 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
   executor lockdown below leaves open. The trust basis stays the signed plugin and the capability grant
   the operator approved; the proxy stops an honest plugin from reaching an ungranted destination and
   makes every attempt visible.
-- **OS controls: executor lockdown always, per-plugin rules optional** — the executor lockdown always
-  ships with the package: `IPAddressDeny=any` with `IPAddressAllow=localhost` in the executor's systemd
-  unit (see Security), a block rule on the executor binary on Windows, and the pf equivalent on macOS,
-  so only the loopback proxy stays reachable. The agent can also express each plugin's grant as native
-  OS policy, so a bypass attempt fails in the kernel rather than only in the log. These per-plugin rules
-  are optional: `osControls.mode` selects `off` (default), `check`, or `apply`, and nothing touches host
-  firewall state for them unless an operator sets `apply`. The definitions are derived from the
-  accepted bundle, so they follow grant changes without hand-maintained templates:
-  - **Per-plugin grant rules** — one rule set per plugin holding a network grant, including the
-    validator's TUF egress: transient-unit properties on Linux
+- **OS controls: lockdown always, `serve` egress rules optional** — the lockdown always ships with the
+  package, so a plugin that bypasses the proxy reaches only loopback: `IPAddressDeny=any` with
+  `IPAddressAllow=localhost` in the executor's systemd unit (see Security), which every plugin it forks
+  inherits, and the pf equivalent on macOS. On Windows the agent creates a Windows Firewall outbound
+  block rule (`New-NetFirewallRule -Direction Outbound -Action Block -Program`, enforced by the Windows
+  Filtering Platform) for the executor binary and one for each installed plugin executable path, each
+  with `-RemoteAddress` covering every range except loopback so the proxy stays reachable
+  ([New-NetFirewallRule](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule)).
+  A `-Program` rule matches the program that owns the connection, so a rule on the executor binary
+  alone does not cover the child processes it launches. A plugin's rule is created when it is installed
+  (by the agent package for core plugins) and removed when it is uninstalled.
+
+  Every plugin's external traffic leaves the host from `serve`'s proxy, so OS rules keyed on a plugin's
+  user or program would never see it; the lockdown already covers a bypass. What OS policy can still add
+  is a ceiling on `serve` itself, so a compromised `serve` or a proxy bug cannot reach an arbitrary
+  host. `osControls.mode` selects `off` (default), `check`, or `apply`, and nothing touches host
+  firewall state for it unless an operator sets `apply`:
+  - **`serve` egress rules** — in `apply` mode the agent restricts `serve`'s own egress to the union of
+    the granted destinations in the accepted bundle, the gateway, the TUF repository
+    (`plugins.sigstore.tufMirror`), and the host's DNS resolvers: `IPAddressDeny=any` with
+    `IPAddressAllow=` those addresses on `serve`'s unit on Linux
     ([systemd.resource-control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)),
-    `New-NetFirewallRule -Program` with `-RemoteAddress` and `-RemotePort` on Windows
-    ([New-NetFirewallRule](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule)),
-    and on macOS a pf anchor keyed on the plugin's user, since pf matches `user <user>` against the
-    socket's owner ([pf.conf](https://keith.github.io/xcode-man-pages/pf.conf.5.html)).
+    a `New-NetFirewallRule -Service` rule set for `serve`'s service with `-RemoteAddress` and
+    `-RemotePort` on Windows, and on macOS a pf anchor keyed on `serve`'s user, since pf matches
+    `user <user>` against the socket's owner
+    ([pf.conf](https://keith.github.io/xcode-man-pages/pf.conf.5.html)). These rules match addresses,
+    not names, so the agent resolves each named destination when it generates them, on every accepted
+    bundle and every `enforce.interval`; a destination whose addresses change in between is refused
+    until the next regeneration (unverified in practice for CDN-hosted mirrors). `IPAddressAllow=` takes
+    no port, so on Linux a `*` host grant leaves `serve` unrestricted by address, which `check` reports.
+    Per-plugin-user rules are not generated: they would never see external traffic.
   - **Regeneration** — on every accepted bundle whose grants differ, `apply` mode rewrites and reloads
-    the definitions before the affected plugin launches, and refuses to launch it if that fails, so a
-    grant is never left enforced only in the proxy when the operator asked for OS policy.
+    the rules before `serve`'s proxy honors the new grant, and keeps refusing the new destinations if
+    that fails, so a grant is never left enforced only in the proxy when the operator asked for OS
+    policy.
   - **Verification** — `rackmarshal-agent os-controls check` (also what `check` mode runs) compares live
     OS state with the generated definitions and reports drift without changing anything, for CI and the
     control node (0005).
@@ -519,8 +546,15 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
 - **Plugin install** — a matching pin with a wrong publisher identity, a missing transparency-log entry
   or SCT, TUF rollback, freeze (expired timestamp), and root-rotation fixtures, and `verify` mode failing
   any network call under `IPAddressDeny=any`.
+- **Plugin kinds** — a bundle naming a plugin kind without its embedded schema is rejected; a plugin's
+  embedded `host` Rego denies only within that plugin's granted kinds; a tampered embedded schema or
+  policy fails the DSSE check.
 - **Dispatch** — each kind reaches only the plugin granted its `resource:` capability; idempotence of
   the `files`, `packages`, and `services` plugins is tested with them in 0014.
+- **OS controls** — on Windows, a plugin that opens its own socket to an external address is blocked by
+  its own executable's rule, the rule is gone after uninstall, and loopback still reaches the proxy; in
+  `apply` mode `serve` reaches the granted destinations, the gateway, and the TUF repository and nothing
+  else, and `check` reports drift and a `*` grant on Linux.
 - **Sandbox and limits** — Tengo escapes, OPA timeouts, plugin memory and pid limits, and crash
   quarantine. Every plugin, the validator in `refresh` mode included, is a child of the executor, runs
   as its own user, is non-dumpable on Linux, and has no proxy token in its environment. Fuzzing,

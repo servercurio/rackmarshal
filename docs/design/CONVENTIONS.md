@@ -142,6 +142,8 @@ a module, as 0001 is.
 - **Every plugin ships a provisioner bundle** — its JSON schemas, its Rego, and its result schema, signed
   and digest-pinned like any other release asset. A plugin that ships no bundle is not importable, because
   the control plane would otherwise sign a directive containing a kind it can neither validate nor police.
+  Agents never download it: `provisioner` embeds the JSON Schema and agent-side Rego of each kind a host
+  uses in the DSSE-signed directive bundle ([0011](0011-provisioner.md)).
 - **A provisioner-side executable is optional.** The bundle is data; the service that interprets results
   and proposes follow-up work is a separate, optional artifact in the same `Plugin` document at the same
   version.
@@ -182,7 +184,8 @@ a module, as 0001 is.
   unless the kebab-case feature name is in `overrides`, and logs every use: at `warn` in `production`
   (an override) and at `info` in other tiers.
   `kek-sealed-ca-store` and `kek-sealed-signing-keys` ([0006](0006-identity.md)) are refused in
-  `production` regardless of `overrides`.
+  `production` regardless of `overrides`, and `plaintext-database` ([0009](0009-inventory.md)) is
+  refused in both hardened tiers regardless of `overrides`.
 
 ## Running multiple replicas
 

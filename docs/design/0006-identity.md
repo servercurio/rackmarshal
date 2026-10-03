@@ -59,7 +59,10 @@ tokens and service certificate bootstrap
 
 A single TLS 1.3 mutual-TLS listener on a private interface. Callers reach it three ways:
 
-- **`gateway`** forwards `operator` and `agent` operations and the public protocol endpoints.
+- **`gateway`** forwards `operator` and `agent` operations and the public protocol endpoints. It
+  proxies the protocol endpoints by path prefix outside the contract, without authentication
+  ([0008](0008-gateway.md)), and passes agent enrollment as an operation ID on 0002's unauthenticated
+  allowlist.
 - **`sso`** and other services call `internal` operations directly with service certificates.
 - **Service enrollment** is the one route that accepts a connection without a client certificate,
   because the enrolling service and `gateway` have no certificate yet. Every `internal` operation
@@ -114,8 +117,10 @@ client's loopback redirect URIs match any port on `127.0.0.1`
 | `GET/POST /identity/v1alpha1/tenants`, `/{tenantId}`          | operator   | bearer         |
 | `GET/POST /identity/v1alpha1/accounts`, `/{accountId}`        | operator   | bearer         |
 | `GET/POST /identity/v1alpha1/roles`, `/role-bindings`         | operator   | bearer         |
-| `GET/POST/DELETE /identity/v1alpha1/api-tokens`               | operator   | bearer         |
+| `GET/DELETE /identity/v1alpha1/api-tokens`                    | operator   | bearer         |
+| `POST /identity/v1alpha1/api-tokens`                          | operator   | bearer, step-up if scoped |
 | `GET/POST /identity/v1alpha1/identity-providers`              | operator   | bearer         |
+| `GET /identity/v1alpha1/identity-providers`, `/{providerId}`  | internal   | mTLS, `sso` only |
 | `POST /identity/v1alpha1/enrollment-tokens`                   | operator   | bearer, step-up |
 | `GET/DELETE /identity/v1alpha1/enrollment-tokens`, `/{tokenId}` | operator | bearer         |
 | `GET /identity/v1alpha1/agents`, `/{agentId}`                 | operator   | bearer         |
@@ -137,6 +142,18 @@ client's loopback redirect URIs match any port on `127.0.0.1`
 User codes, tokens, and passwords travel only in request bodies marked `x-rackmarshal-sensitive`, never in
 paths (CONVENTIONS). Tenancy comes from the token's principal, not the path (0002's proposal).
 
+Authorization is split by grain. Each `operator` operation names the roles that may call it in
+`x-rackmarshal-roles` ([0002](0002-api-schema.md)), and the gateway checks them against the token's
+`rackmarshal_roles` before forwarding (0008), with no decision call per request. `identity` keeps the
+finer checks that need its data: tenant ownership of the target, API token scope, step-up, and the
+two-person rule for service-enrollment approvals.
+
+[`sso`](0007-sso.md) reads external IdP settings through the `internal` `identity-providers` operations.
+The collection `GET`, one operation listing both audiences, returns to `sso` only the login method
+chooser's fields: ID, tenant, protocol, and display name. `GET /{providerId}` returns the full record and
+is the only operation that returns an OIDC client secret, in a property marked `x-rackmarshal-sensitive`;
+the `operator` operations accept a secret on write and never return it.
+
 The agent resource carries the agent ID, its tenant, host labels from the enrollment token, certificate
 serial and expiry, and enabled state. `gateway` reads it as an `internal` operation to resolve an
 agent's tenant for `X-Rackmarshal-Principal` (0008), `inventory` reads the host labels on first contact
@@ -153,9 +170,9 @@ revocation cache window rather than at certificate expiry.
   ([RFC 9068 §2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1)). `auth_time` is the user's
   last authentication, kept unchanged across refreshes as for ID tokens
   ([OIDC Core §12.2](https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokenResponse)); a token
-  exchanged from an API token carries the API token's creation time, so an API token stops passing
-  step-up (see Security) once it is older than `stepUp.maxAge`. The gateway verifies locally against
-  JWKS and rejects any `iss` or `aud` naming another environment.
+  exchanged from an API token carries the API token's creation time, its scopes in `scope`, and its ID
+  in `rackmarshal_api_token`, which is how step-up (see Security) recognizes and refuses it. The gateway
+  verifies locally against JWKS and rejects any `iss` or `aud` naming another environment.
 - **ID tokens** — for OIDC relying parties, including `portal` and `console`, which check `auth_time` and
   `acr` on them for step-up (0016); never accepted as bearer tokens.
 - **Refresh tokens** — opaque, 256 random bits, stored as SHA-256, rotated on every use with reuse
@@ -164,6 +181,11 @@ revocation cache window rather than at certificate expiry.
   no slow hash). The gateway exchanges one for a signed access token through `token-exchanges`
   (RFC 8693 semantics) and caches the result for at most 30 seconds, so every bearer token a service
   sees is a signed, environment-bound JWT. Maximum lifetime 365 days, default 90.
+- **Enrollment-scoped API tokens** — an API token may carry the scope `enrollment-tokens:create`, bound
+  at creation to one tenant in which its creator may create agent enrollment tokens, so CI can enroll
+  hosts unattended ([0010](0010-cli.md), [0017](0017-portal.md)). Creating one, or replacing one to
+  rotate it, requires step-up. A scoped token authorizes agent enrollment-token creation in that tenant
+  and nothing else (see Enrollment tokens and Security).
 - **SAML assertions** — signed with a per-environment key; the audience restriction and issuer carry
   the environment ID.
 - **Signing key rotation** — every 30 days; JWKS publishes current, next, and previous keys.
@@ -178,11 +200,13 @@ SHA-256 is stored.
 | Kind    | Bound to                                                  | TTL default / max | Created by                   |
 |---------|-----------------------------------------------------------|-------------------|------------------------------|
 | agent   | environment, tenant, optional host labels                 | 1h / 24h          | `cli`, `console`, `portal`   |
-| service | environment, `service/<repository>`, host, CSR public key | 15m / 1h          | control node certificate     |
+| service | environment, `service/<name>`, host or namespace, CSR key | 15m / 1h          | control node certificate     |
 
 Operators create agent tokens through `cli` or `console`; tenant administrators create them through
 `portal`, for their own tenant only. Every agent token creation requires step-up (see Security),
-whichever client requests it.
+whichever client requests it, with one exception: a request bearing an enrollment-scoped API token for
+its own tenant. Each token created that way has a TTL of at most `enrollment.agentDefaultTtl`, never
+over 1 hour whatever the request asks, and each use is audited with the API token's ID.
 
 Redemption is one
 `UPDATE … SET used_at = now() WHERE id = $1 AND used_at IS NULL AND expires_at > now() RETURNING …`
@@ -196,12 +220,20 @@ a peer assert `X-Rackmarshal-Principal` for any user or tenant (0008); issuing t
 requires the token to be marked `approval: required`, redeemable only after a second operator approves
 it through `POST /identity/v1alpha1/service-enrollment-approvals`.
 
+Plugin services ([0021](0021-plugin-extensibility.md)) enroll as `service/plugin-<name>` with the same
+tokens. On Kubernetes a plugin sidecar shares the provisioner pod's service account, which maps only to
+`provisioner`, so it cannot use the projected-token path below. The control node instead requests one
+token per provisioner replica, naming the cluster and namespace in place of a host; since the pod does
+not exist yet, it generates each key pair itself, registers the SPKI hash as above, and delivers token
+and key in a Secret mounted only into the sidecar container ([0005](0005-infrastructure.md)).
+
 #### Kubernetes service account enrollment
 
 Services on Kubernetes ([0005](0005-infrastructure.md)) enroll with a projected service account
 token instead of a service enrollment token, on the same `service-enrollments` operation. The request
 carries exactly one of `enrollmentToken` or `serviceAccountToken`, both `x-rackmarshal-sensitive`. Agents
-cannot use this path. Pods enroll on start, scale-out, and rescheduling without the control node.
+and plugin sidecars cannot use this path. Pods enroll on start, scale-out, and rescheduling without the
+control node.
 
 **Cluster issuer registry** — loaded from `kubernetes.clusterIssuersFile`, which `infrastructure`
 renders from the inventory. There is no write API, so a registration arrives only through a signed
@@ -336,7 +368,8 @@ PostgreSQL through the starter's pgx, bun, and goose migrations. Every tenant-sc
 | `sessions`                     | `id`, `principal_id`, `amr`, `expires_at`, `revoked_at`                      |
 | `login_challenges`             | `id`, `principal_id`, `amr`, `binding_hash`, `verifier_hash`, `expires_at`   |
 | `saml_assertion_ids`           | `provider_id`, `assertion_id` (unique pair), `not_on_or_after`               |
-| `refresh_tokens`, `api_tokens` | `token_hash`, `family_id`, `principal_id`, `expires_at`, `revoked_at`        |
+| `refresh_tokens`               | `token_hash`, `family_id`, `principal_id`, `expires_at`, `revoked_at`        |
+| `api_tokens`                   | `id`, `token_hash`, `principal_id`, `scope`, `tenant_id`, `revoked_at`       |
 | `enrollment_tokens`            | `id`, `kind`, `secret_hash`, `bindings`, `expires_at`, `used_at`             |
 | `service_account_enrollments`  | `cluster_id`, `token_hash`, `pod_uid`, `key_sha256`, `serial`, `expires_at`  |
 | `certificates`                 | `serial`, `spiffe_id`, `profile`, `not_after`, `revoked_at`, `reason`        |
@@ -418,22 +451,29 @@ from a different replica validates it the same way.
   in an HSM or KMS; `staging` and lower may use them, and startup logs each at `warn`.
 - **CA constraints** — the intermediate has path length 0 and a URI name constraint for the trust
   domain (0005), so even a misissued leaf cannot name another environment.
-- **Caller pinning** — internal operations check the caller's SPIFFE ID: `sso` for login
-  operations, `gateway` for token exchange, `control-node/*` for service enrollment tokens and
-  cluster issuers.
+- **Caller pinning** — internal operations check the caller's SPIFFE ID: `sso` for login operations and
+  IdP settings, `gateway` for token exchange, `control-node/*` for service enrollment tokens and cluster
+  issuers.
 - **Brute force** — failed password, WebAuthn, and user-code attempts are counted per account and per
   source in PostgreSQL, with exponential delays rather than hard lockouts that attackers could abuse.
 - **No enumeration** — verification responses do not distinguish unknown accounts from bad passwords.
-- **Step-up** — the trust-creating operations of [0018](0018-console.md)'s step-up table that `identity`
-  serves — enrollment-token creation, service-enrollment approvals, revocations, and signing-key and CA
-  key operations — are refused unless the access token's `auth_time` is within `stepUp.maxAge`
-  (5 minutes), whatever the client and in every tier. The refusal is `401` with
-  `WWW-Authenticate: Bearer error="insufficient_user_authentication", max_age="300"`
+- **Step-up** — the trust-creating operations `identity` serves — those of [0018](0018-console.md)'s
+  step-up table (enrollment-token creation, service-enrollment approvals, revocations, and signing-key
+  and CA key operations) plus scoped API-token creation — are refused unless the access token's
+  `auth_time` is within `stepUp.maxAge` (5 minutes), whatever the client and in every tier. The refusal
+  is `401` with `WWW-Authenticate: Bearer error="insufficient_user_authentication", max_age="300"`
   ([RFC 9470](https://www.rfc-editor.org/rfc/rfc9470)), telling the client to re-authenticate with
   `prompt=login` and `max_age=300` ([OIDC Core §3.1.2.1](https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest)).
   Relying parties such as `portal` and `console` also check `auth_time` and `acr` in the ID token
   ([OIDC Core §2](https://openid.net/specs/openid-connect-core-1_0.html#IDToken)), but this check is the
   one that holds when a client skips its own.
+- **API tokens and step-up** — an access token carrying `rackmarshal_api_token` cannot step up, so every
+  trust-creating operation refuses it, however new the API token. The one exception is agent
+  enrollment-token creation with a token scoped `enrollment-tokens:create` for the request's tenant,
+  where the freshness check is waived; the enrollment tokens it creates are capped at
+  `enrollment.agentDefaultTtl` and at most 1 hour, and every use is audited. Creating or replacing a
+  scoped API token is itself trust-creating and needs a fresh interactive login. A stolen scoped token
+  therefore yields at most short-lived agent tokens in one tenant, each visible in the audit log.
 - **SAML replay** — `sso` passes each external assertion's ID and `NotOnOrAfter` with
   `federated-logins`, and `identity` inserts them into `saml_assertion_ids` under its unique constraint in
   the same transaction, keeping the row until `NotOnOrAfter`. An assertion replayed to any `sso` replica
@@ -525,7 +565,11 @@ than one service.
 - **Login and step-up** — `/authorize` refuses a code for a missing or mismatched login-binding cookie
   and for a reused or expired verifier; a SAML assertion ID is accepted once across replicas; every
   trust-creating operation refuses an access token whose `auth_time` is older than `stepUp.maxAge`,
-  including one refreshed or exchanged from an API token.
+  including one refreshed, and refuses any token exchanged from an API token, however new.
+- **Scoped API tokens** — an `enrollment-tokens:create` token creates agent enrollment tokens in its
+  own tenant without step-up, each capped at 1 hour and audited with the API token's ID; it is refused
+  for another tenant, for every other operation, and for creating another API token; creating it
+  without step-up fails.
 - **Data** — forward-only migrations applied on PostgreSQL in CI ([0005](0005-infrastructure.md)); a
   test asserts every tenant-scoped query filters by `tenant_id`.
 
@@ -551,10 +595,6 @@ than one service.
 
 ## Open questions
 
-- **Gateway exceptions** — `/authorize`, `/token`, `/device-authorization`, JWKS, and agent enrollment
-  must pass the gateway unauthenticated. Agree the allowlist with [0008](0008-gateway.md).
-- **Authorization decisions** — roles in the token with a role-to-permission table cached by the
-  gateway (proposed), or a decision call per request?
 - **SAML IdP scope** — required in v1alpha1, or deferred until a relying party needs it, given
   crewjam/saml's release cadence?
 - **SAML signing algorithm** — ECDSA P-256 per CONVENTIONS, or RSA for relying parties that lack ECDSA?

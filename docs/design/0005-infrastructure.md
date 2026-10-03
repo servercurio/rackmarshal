@@ -31,8 +31,8 @@ ID, and CA bundle, and the control node holds a root-signed certificate
 
 Kubernetes support is mandatory, beside containers and direct installs on a compatible OS, all through
 this one pipeline. Certificate bootstrap depends on the target: the control node delivers single-use
-tokens to containers and hosts, while pods enroll with projected service account tokens that
-`identity` verifies offline. Service repositories ship the artifacts in
+tokens to containers, hosts, and plugin sidecars, while pods enroll with projected service account
+tokens that `identity` verifies offline. Service repositories ship the artifacts in
 [CONVENTIONS — Deployment artifacts](CONVENTIONS.md#deployment-artifacts).
 
 **Goals**
@@ -222,6 +222,7 @@ on role and playbook YAML; the rest run on rendered output. Initial rule set (pr
 | kubernetes | no host namespaces or `hostPath`; `NetworkPolicy` present; no Role, RoleBinding, or Secret |
 | kubernetes | `automountServiceAccountToken: false`; one projected token, audience `spiffe://<id>/service/identity`, 600 s, init container only |
 | kubernetes | key volume is `emptyDir` `medium: Memory`; init and main containers use the same digest     |
+| kubernetes | a plugin's enrollment Secret is mounted only by that plugin's sidecar container            |
 | compose    | non-root `user`, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, no host network      |
 | quadlet    | non-root `User=`, `ReadOnly=true`, `NoNewPrivileges=true`, `DropCapability=all`, no `AutoUpdate=` |
 | systemd    | `NoNewPrivileges=`, `ProtectSystem=strict`, non-root `User=`, token via `LoadCredential=`  |
@@ -330,8 +331,11 @@ ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OC
 **Containers and operating systems** (`podman`, `docker`, `package`, `windows`):
 
 1. If the instance's certificate has less than a third of its lifetime left, or none exists, the control
-   node calls `identity` over mutual TLS with its control-node certificate for a service enrollment
-   token for `service/<repository>` and this host, TTL 15 minutes.
+   node generates the service's ECDSA P-256 key pair on the target, in the state directory, then calls
+   `identity` over mutual TLS with its control-node certificate for a service enrollment token for
+   `service/<repository>` and this host, TTL 15 minutes, registering the key's
+   `SHA-256(SubjectPublicKeyInfo)`. `identity` refuses a CSR with any other key (0006), so the token is
+   useless off the host.
 2. The token is written with `no_log: true` and read through `certificate.enrollmentTokenFile`: a Podman
    secret (`Secret=`); a file on the host's `/run` tmpfs mounted as a Compose secret
    ([Compose secrets](https://docs.docker.com/compose/how-tos/use-secrets/)); `LoadCredential=`, which
@@ -340,8 +344,17 @@ ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OC
    Windows a file under `%ProgramData%\rackmarshal-<name>\` ACL'd to the service account.
 3. The key stays in a `0600` (or ACL'd) file in the state directory, so restarts need no new token. When
    `/readyz` passes, the role removes the token; an unused token expires on its own.
+4. **`service/gateway`** tokens are `approval: required` (0006): redeemable only after a second operator
+   approves them through `service-enrollment-approvals`, with step-up, before the 15-minute TTL ends.
+   The role requests every gateway token the run needs in one step, delivers them, prints each token ID
+   and key digest for the approver to compare in [0018](0018-console.md)'s approval queue, and then
+   waits, polling `/readyz` while the service retries its refused enrollment, for at most the TTL less
+   a 2-minute margin for enrollment (proposed). The approver is never the requester (0018). A token left
+   unapproved expires unredeemed, the play fails for that host, and the next run issues a new one.
+   Renewals need no token and so no approval.
 
-**Kubernetes** — no Ansible run is involved, so pods enroll on start, scale-out, and rescheduling:
+**Kubernetes** — no Ansible run is involved, so pods enroll on start, scale-out, and rescheduling
+(plugin sidecars excepted, below):
 
 1. Each service has its own ServiceAccount, and pods set `automountServiceAccountToken: false`; services
    never call the Kubernetes API.
@@ -359,6 +372,27 @@ ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OC
 5. The token is never logged, copied, or exposed as a variable. Each namespace enforces the `restricted`
    [Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/), and
    only cluster administrators may create tokens for Rackmarshal service accounts.
+
+**Plugin sidecars on Kubernetes** — a plugin service runs as a sidecar in the provisioner pod
+([0021](0021-plugin-extensibility.md)), and the pod's one service account maps to `provisioner`, so the
+sidecar cannot enroll with the projected token. It enrolls with a service enrollment token instead:
+
+1. On each run, for each plugin service, the control node requests one single-use token for
+   `service/plugin-<name>` per provisioner replica, as in step 1 for hosts. A pod's key cannot be
+   generated before the pod exists, so the control node generates each token's key pair itself and
+   registers its SPKI SHA-256.
+2. It writes the token and key pairs into one Secret per plugin with `kubernetes.core.k8s` and `no_log`
+   (see Least privilege and secrets), mounted only into that plugin's sidecar container — never into
+   the provisioner container or the enrollment init container. The socket stays on the shared
+   `emptyDir`; the sidecar's key and certificate go to its own `medium: Memory` `emptyDir`.
+3. The sidecar tries each pair in turn. Redemption is atomic (0006), so each token enrolls one sidecar
+   and a sidecar that loses a race moves to the next pair. It renews in place like any service.
+4. Keeping the key beside the token in a Secret adds no reach: whoever can read Secrets in the
+   namespace can already run a pod as `provisioner` (see Namespaces are identities).
+
+Tokens last 15 minutes, so they cover only the rollout the run drives. A provisioner pod created later
+— scale-out, eviction, rescheduling — starts with its plugin sidecars unready until the next run issues
+fresh tokens (see Open questions); container restarts within a pod keep the `emptyDir` key.
 
 #### Least privilege and secrets
 
@@ -465,6 +499,9 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
   and 0006's discovery mode becomes the norm (unverified)?
 - **Pod deletion** — offline verification cannot see a deleted pod, whose certificate stays valid for up
   to 7 days after its key is gone. Acceptable, or revoke on deletion?
+- **Plugin sidecars after rescheduling** — a provisioner pod created between runs waits for the next run
+  to enroll its plugin sidecars. Accept that, schedule a run on pod events, or issue spare tokens with
+  the 1-hour maximum TTL?
 - **Artifact verifiers** — tooling for deb, rpm, and Authenticode signatures, and cosign for charts?
 - **Authenticode signing** — which certificate signs the Windows installers, and where does it live?
 - **Control-node certificate lapse** — recover by root ceremony, or have two control nodes cross-renew?

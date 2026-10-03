@@ -94,8 +94,14 @@ Every desired-state document carries the same four top-level fields.
 | Field         | Type                | Required | Notes                                                  |
 |---------------|---------------------|----------|--------------------------------------------------------|
 | `name`        | string              | yes      | Lowercase DNS label, 1–63 characters                    |
-| `labels`      | map[string]string   | no       | Selector keys; both key and value are DNS labels        |
+| `labels`      | map[string]string   | no       | Selector keys; syntax as 0009's endpoint labels         |
 | `annotations` | map[string]string   | no       | Not selectable; carried through unmodified              |
+
+`labels` use the Kubernetes label syntax that [0009](0009-inventory.md) fixes for endpoint labels: a key
+is an optional DNS-subdomain prefix and a `/`, then a name of 63 characters or fewer; a value is 63
+characters or fewer, may be empty, and otherwise begins and ends with an alphanumeric character with `-`,
+`_`, `.`, and alphanumerics between. The `rackmarshal.servercurio.com/` prefix is reserved. Admission
+rejects any other key or value.
 
 Documents are decoded with alias nodes rejected, unknown top-level fields rejected, and a 1 MiB limit,
 as 0011 specifies at admission. The same rules apply wherever a document is accepted, including the
@@ -155,7 +161,7 @@ across sets. Cycles are rejected.
 The host kinds — `File`, `Directory`, `Package`, and `Service`, provided by the core `files`,
 `packages`, and `services` plugins ([0014](0014-agent-plugins.md)) — are Linux-only in `v1alpha1`. Their
 Windows semantics (ACLs instead of mode and owner, Windows package managers, SCM services) are deferred,
-as 0014 defers Windows services. `Directory` is not yet specified here (see Open questions).
+as 0014 defers Windows services.
 
 **`File`**
 
@@ -173,6 +179,21 @@ the agent fetches through its egress proxy). `source` must be an `https` URL and
 the expected bytes beside it; admission rejects any other scheme or a missing digest. The agent verifies
 the digest of what it fetched before writing anything to `path`, and a mismatch fails the resource with
 the file left untouched.
+
+**`Directory`**
+
+| Field   | Type   | Required | Default   | Notes                                     |
+|---------|--------|----------|-----------|-------------------------------------------|
+| `path`  | string | yes      |           | Absolute path on the host                 |
+| `mode`  | string | no       | `"0755"`  | Octal, quoted, as for `File`              |
+| `owner` | string | no       | `root`    |                                           |
+| `group` | string | no       | `root`    |                                           |
+| `state` | enum   | no       | `present` | `present` or `absent`                     |
+
+A `Directory` manages the directory itself — its existence, mode, and ownership — and nothing inside it.
+`v1alpha1` has no recursive content management: files under it are declared as `File` resources, which
+order after it with `dependsOn: [Directory/<name>]`. For the same reason `state: absent` removes only an
+empty directory; a non-empty one fails the resource and is left untouched.
 
 **`Package`**
 
@@ -322,7 +343,6 @@ OpenAPI component schemas between versions.
   required provisioner bundle ([0021](0021-plugin-extensibility.md)), which answers the question 0013
   raised. The kinds the built-in `http`, `ssh`, and `netconf` drivers enforce (0011) are not yet in this
   catalog: do they become Go types in `api-schema` like the host kinds?
-- **`Directory`** — 0014's `files` plugin provides it, but its fields are not specified here yet.
 
 ## References
 

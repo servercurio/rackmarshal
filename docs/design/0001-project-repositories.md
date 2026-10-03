@@ -363,7 +363,8 @@ Every Rackmarshal component — the services, `cli`, `agent`, agent plugins, and
   per-setting "change this in production" guidance in the `go-*-starter` configuration.
 - **Last-resort features gated** — features marked last resort or testing-only, such as a plaintext
   telemetry endpoint, are refused in `production` unless explicitly overridden, and every override is
-  logged. The KEK-sealed CA key and signing-key stores are refused in `production` with no override.
+  logged. The KEK-sealed CA key and signing-key stores are refused in `production`, and a plaintext
+  database connection in `production` and `staging`, with no override.
 - **Isolation** — each environment has its own CA, enrollment tokens, and credentials. A service or
   agent from one environment is rejected by another; see [Environment identity](#environment-identity).
 - **Tagged logs and telemetry** — `common` adds the environment name to every log event and sets

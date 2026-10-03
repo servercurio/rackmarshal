@@ -137,9 +137,17 @@ The bundle is a [DSSE](https://github.com/secure-systems-lab/dsse/blob/master/en
 chain. It is signed with the provisioner's own service key, whose certificate carries
 `spiffe://<environment-id>/service/provisioner`. The payload holds `environmentId`, `tenantId`,
 `endpointId`, `agentId`, a per-endpoint monotonic `generation`, `issuedAt`, `notAfter` (default 7
-days), `mode`, rendered resources, `host`-phase policies and scripts, and plugin pins (name, version,
-SHA-256, and publisher identity) taken only from verified plugin imports (below). 0001 relies on this
-signature for plugin pins.
+days), `mode`, rendered resources, `host`-phase policies and scripts, plugin kind definitions, and
+plugin pins (name, version, SHA-256, and publisher identity) taken only from verified plugin imports
+(below). 0001 relies on this signature for plugin pins.
+
+**Plugin kind definitions.** For each plugin kind the host's resources use, the payload embeds that
+kind's JSON Schema, its result schema if it has one, and the plugin's `host`-phase Rego, copied from the
+plugin's verified provisioner bundle in `plugin_bundles` ([0021](0021-plugin-extensibility.md)). A host
+that uses no plugin kind receives none. The DSSE signature covers them like every other payload field,
+so the agent validates and evaluates from the directive bundle alone and never downloads a provisioner
+bundle ([0012](0012-agent.md)). They are part of the rendered content, so a plugin upgrade that changes
+a schema or its Rego changes the bundle digest.
 
 **Digest and re-signing.** The bundle digest covers the rendered content only — every payload field
 except `issuedAt`, `notAfter`, and `generation` — so the same documents and facts always yield the same
@@ -183,7 +191,7 @@ verifier).
   against the plugin it belongs to: a `resource:` capability with no matching schema fails
   `schema_missing`, and a schema with no matching capability fails `schema_unclaimed`, so a bundle can
   neither leave a declared kind unvalidated nor smuggle a definition for a kind the plugin was never
-  granted. Its schemas and compiled policy land in `plugin_bundles`.
+  granted. Its schemas, Rego source, and compiled policy land in `plugin_bundles`.
 - **Record** — verified digests, signer identity, Rekor log index, and integrated time go into
   `plugin_verifications`, one row per artifact, and the audit log. Only verified digests can appear as
   plugin pins in a bundle; anything else fails admission with `plugin_not_verified`.
@@ -283,10 +291,13 @@ A provisioner service is an ordinary Rackmarshal service, not a go-plugin plugin
 process, never in this address space: a sidecar container on `kubernetes`, a
 `rackmarshal-provisioner-plugin-<name>.service` unit on `package`, an SCM service on `windows`, each with
 its own lifecycle. It enrolls with `identity` like any service, as
-`spiffe://<environment-id>/service/plugin-<name>`, and the provisioner dials it with gRPC over a Unix
-domain socket under `plugins.socketDir` — `AF_UNIX`, which Windows 10 1803 and Server 2019 and later
-also provide ([Microsoft](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/)) — with
-mutual TLS on both SPIFFE IDs. It is granted capabilities (`validate`, `interpret`, `propose`) in its
+`spiffe://<environment-id>/service/plugin-<name>`; on `kubernetes` its single-use service enrollment
+token is a Secret mounted only into the sidecar container, never into the provisioner or init container,
+and the socket directory is a shared `emptyDir` ([0021](0021-plugin-extensibility.md)). The provisioner
+dials it with gRPC over a Unix domain socket under `plugins.socketDir` — `AF_UNIX`, which Windows 10
+1803 and Server 2019 and later also provide
+([Microsoft](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/)) — with mutual TLS
+on both SPIFFE IDs. It is granted capabilities (`validate`, `interpret`, `propose`) in its
 `Plugin` document, holds no database credentials, and has no network grant by default.
 
 `InterpretResult` runs after a report is accepted and validated, and its conditions merge into
@@ -378,7 +389,7 @@ key.
 | `endpoint_status`      | path, `applied_generation`, drift (`in_sync`, `drifted`, `failed`, `unknown`), conditions  |
 | `enforcement_reports`  | monthly partitions, 30-day retention; digests of observed state, plus bounded `result_json` |
 | `plugin_verifications` | `plugin_id`, `artifact`, `platform`, `sha256`, signer identity, Rekor log index, integrated time |
-| `plugin_bundles`       | per plugin version: verified schemas and compiled policy, keyed by bundle digest            |
+| `plugin_bundles`       | per plugin version: verified schemas, Rego source, and compiled policy, by bundle digest    |
 | `audit_events`         | append-only: principal, action, document, policy decision                                  |
 
 **Plugin results.** `enforcement_reports` carries a bounded `result_json` beside the observed digest
@@ -425,10 +436,12 @@ stating:
   [row-level security](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) with
   `SELECT set_config('rackmarshal.tenant_id', $1, true)` at the start of each transaction is defense
   in depth; unlike `SET LOCAL`, `set_config` takes the tenant ID as a bind parameter.
-- **RBAC hooks** — the gateway authorizes each operation (0008). The provisioner additionally checks
-  permissions such as `provisioner.policies.write` from the forwarded principal (format per 0006), and
-  passes `principal` to `admission` policies for finer rules. Writing `Policy` and `Script` documents is
-  a separate permission from writing `DirectiveSet`s.
+- **Authorization** — each operator operation names the roles it accepts in `x-rackmarshal-roles`
+  ([0002](0002-api-schema.md)), and the gateway refuses a token that holds none of them (0008).
+  `policies` and `scripts` are separate operations from `directive-sets`, so writing `Policy` and
+  `Script` documents takes different roles from writing `DirectiveSet`s. Finer checks stay in this
+  service: it reads the forwarded principal (format per 0006) for tenant scope and passes `principal`
+  to `admission` policies for per-document rules.
 - **Untrusted input** — size limits, alias rejection, strict schemas, OPA capability filtering, and the
   Tengo sandbox above; fuzzing covers YAML decoding and DSSE parsing.
 - **Signing** — the bundle key is the renewing service key from `pkg/enroll`; it never leaves the
@@ -517,6 +530,9 @@ support the current and previous `apiVersion`.
   tests against the OpenAPI document, fuzzing, `-race`, and the module allowlist.
 - **Plugin verification** — a wrong identity, wrong digest, missing log entry, or unknown trusted root
   fails import, and no bundle may carry an unverified pin or a pin without its publisher identity.
+- **Plugin kind definitions** — a directive bundle carries the schema, result schema, and `host` Rego
+  for exactly the plugin kinds its host's resources use, byte-identical to the verified provisioner
+  bundle, and changing them changes the digest.
 
 ## Alternatives considered
 
@@ -543,8 +559,7 @@ support the current and previous `apiVersion`.
 
 ## Open questions
 
-- **Principal propagation** — the header or token the gateway forwards, and the permission names (0006,
-  0008).
+- **Principal propagation** — does the gateway forward a principal header or the token itself (0008)?
 - **Secret providers** beyond mounted files — Vault, cloud secret managers?
 - **Plugin build tag** — is the tagged plugin host on or off in released artifacts, given that every
   plugin is policed from its bundle either way ([0021](0021-plugin-extensibility.md))?

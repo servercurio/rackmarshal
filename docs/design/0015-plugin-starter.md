@@ -70,7 +70,8 @@ plugin-starter/
 │   │   └── Marker.result.json           # result schema both ends validate against
 │   └── policy/host.rego                 # deny-only, scoped to this plugin's kinds
 ├── testdata/                            # sample resources, development environment
-├── tools/rename/  tools/fakeagent/      # standard library + SDK only
+├── tools/rename/                        # standard library + SDK only
+├── tools/fakeagent/                     # SDK plus a JSON Schema validator, for result_json
 ├── tools/fakeprovisioner/               # also OPA, to compile the bundle's policy (0011)
 ├── docs/                                # writing, security, testing, releasing, licensing, upgrading
 ├── .starter/upstream.yaml               # upstream repository, commit, path classes
@@ -90,12 +91,26 @@ Removed from `go-cli-starter`:
 
 - **Facts** — `example.greeting` returns the configured `greeting`, with no host access.
 - **Resource** — kind `Marker` (`plugins.example.com/v1alpha1`) with `spec.content`. `Plan` reads
-  `<stateDir>/markers/<name>`, and `Apply` writes it atomically, showing idempotence that stays inside
-  the plugin's own directory.
+  `<stateDir>/markers/<name>`, and `Apply` writes it atomically through `os.Root`, showing idempotence
+  that stays inside the plugin's own directory.
 - **Manifest** — `capabilities: [facts, "resource:plugins.example.com/v1alpha1/Marker"]`,
-  `privileges: { runAsRoot: false, execPaths: [], network: [] }`, and
-  `platforms: [linux/amd64, linux/arm64]`. It never sets `core: true`; the agent refuses that without a
-  core signature (0013).
+  `platforms: [linux/amd64, linux/arm64]`, and least privilege with one path grant:
+
+  ```yaml
+  privileges:
+    runAsRoot: false
+    execPaths: []
+    network: []
+    paths:
+      - { path: /var/lib/rackmarshal-plugin-example, access: write }
+  ```
+
+  The path grant is the plugin's own state directory, the only path 0013 grants without an operator
+  listing: the agent's executor creates it at install, owned by `rackmarshal-plugin-example` with mode
+  `0700`, and removes it at uninstall ([0012](0012-agent.md)). The plugin creates `markers/` beneath it
+  on first `Apply`. A `stateDir` outside the grant fails `check-config`, so moving it means changing the
+  manifest and listing the new path in the operator's `plugins.grants`. It never sets `core: true`; the
+  agent refuses that without a core signature (0013).
 - **Provisioner bundle** — built by `task bundle` and released as an asset. The example ships schemas and
   a deny-only `host` policy and **no** provisioner service, which is the shape most plugins want: the
   control plane validates and polices the kind while nothing extra runs beside the provisioner
@@ -104,9 +119,10 @@ Removed from `go-cli-starter`:
   exercises the round trip and its 16 KiB limit rather than leaving authors to discover both.
 - **Rename** — `task rename -- -name acme-backup -module github.com/acme/rackmarshal-plugin-acme-backup`
   (plus `-group` for the example kind; runs `go run ./tools/rename`) rewrites the module path, `cmd/`,
-  `RACKMARSHAL_PLUGIN_EXAMPLE` → `RACKMARSHAL_PLUGIN_ACME_BACKUP`, the manifest, the schema `$id`, workflow
-  identity strings, and the README. The starter's own CI renames a copy and runs the full suite, so the
-  template stays renameable.
+  `RACKMARSHAL_PLUGIN_EXAMPLE` → `RACKMARSHAL_PLUGIN_ACME_BACKUP`, the manifest and its state-directory
+  path grant, the schema `$id`, the Rego package (`rackmarshal.plugin.example.host` →
+  `rackmarshal.plugin.acme_backup.host`; see Names), workflow identity strings, and the README. The
+  starter's own CI renames a copy and runs the full suite, so the template stays renameable.
 
 #### Configuration
 
@@ -135,8 +151,9 @@ go run ./tools/fakeagent -plugin bin/rackmarshal-plugin-example-linux-amd64 \
 `fakeagent` hashes and launches the binary the way `host.Launch` does. It sends the `development`
 environment from `testdata/environment.yaml` in `Init` and prints plans, results, and log lines. It
 validates every `result_json` against the bundle's result schema so an author sees the same rejection
-the agent would produce. The harnesses are how an author runs an unreleased build: a real agent launches
-no unsigned or unpinned plugin in any tier ([0012](0012-agent.md)).
+the agent would produce. The SDK's dependencies include no JSON Schema validator (0013), so `fakeagent`
+carries its own (see Dependencies). The harnesses are how an author runs an unreleased build: a real
+agent launches no unsigned or unpinned plugin in any tier ([0012](0012-agent.md)).
 
 `fakeprovisioner` is the bundle's counterpart: it loads `provisioner/`, compiles the policy, and runs the
 admission and dispatch phases over a document, so an author can see a scoped `deny` fire without standing
@@ -172,12 +189,17 @@ The workflows keep the starter's SHA-pinned actions, `harden-runner`, and a defa
   - `stretchr/testify` v1.12.1 for tests.
 
   The linked set for this combination is not measured yet; `deps.allow` fixes it in CI.
+- **Harness only** — `santhosh-tekuri/jsonschema/v6` v6.0.3, the draft 2020-12 validator 0002 and 0011
+  chose, for `fakeagent` and `fakeprovisioner`, and OPA v1.20.2 for `fakeprovisioner` (0011). Both stay
+  under `tools/` and never link into the plugin binary. Reusing them here is unverified: the tools'
+  linked set is not measured.
 - **Tools** — cosign v3.1.3 (`sigstore/cosign-installer` v4.1.2), cyclonedx-gomod v1.12.0, and
   golangci-lint v2.13.2.
 
 ### Data & storage
 
-None beyond the example's `stateDir`.
+None beyond the example's `stateDir`, which the agent's executor creates and the plugin's own user owns
+(see Example plugin).
 
 ### Security
 
@@ -290,9 +312,12 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
   licensing, so authors considering the GPL should get legal advice.
 - **Names** — a plugin name is a lowercase DNS label (0013) and must be unique within an environment,
   because the `Plugin` document, the binary `rackmarshal-plugin-<name>`, and the provisioner service's
-  SPIFFE ID all derive from it ([0021](0021-plugin-extensibility.md)). Prefixing the vendor
-  (`acme-backup`) avoids collisions between publishers and is recommended, not required; 0021's
-  `bigip` example omits it. A name implies no endorsement; trust comes only from the publisher identity.
+  SPIFFE ID all derive from it ([0021](0021-plugin-extensibility.md)). Its Rego package segment replaces
+  each `-` with `_`, since `-` is not valid in an unquoted Rego package segment: `acme-backup` uses
+  `rackmarshal.plugin.acme_backup`, and import refuses two names that map to the same segment (0021).
+  Prefixing the vendor (`acme-backup`) avoids collisions between publishers and is recommended, not
+  required; 0021's `bigip` example omits it. A name implies no endorsement; trust comes only from the
+  publisher identity.
 
 ### Testing
 
@@ -326,7 +351,8 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
 - **Starter license** — keep Apache-2.0 (proposed), or offer the template under 0BSD, which would
   change 0001's shared meta for this repository?
 - **Third-party kinds** — how are groups named (0013, [0002](0002-api-schema.md))? How their schemas
-  reach `provisioner` and the agent is settled: the required provisioner bundle carries them
+  reach `provisioner` and the agent is settled: the required provisioner bundle carries them to
+  `provisioner`, which embeds the ones a host uses in its signed directive bundle
   ([0021](0021-plugin-extensibility.md)).
 - **Publisher onboarding** — documentation only, or a Rackmarshal-maintained list of known identities?
 - **Platforms** — should darwin and windows become defaults once the agent supports them (0012)?
