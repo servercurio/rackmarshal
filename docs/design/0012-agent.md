@@ -126,8 +126,9 @@ the host is re-enrolled.
   validates, plans, and applies through `ResourceService` (0013).
 - **Idempotence** — `ApplyResource` runs only when `PlanResource` reports a change; a plan after the
   apply must be empty. The `files` plugin writes to a temp file, syncs it, and renames it (0014).
-- **Ordering** — resources run in `dependsOn` order; a failure skips its dependents and continues the
-  others.
+- **Ordering** — resources run in `dependsOn` order, where each reference is `Kind/name` (for example
+  `Package/nginx`; [0020](0020-desired-state-kinds.md#the-resource-envelope)); a failure skips its
+  dependents and continues the others.
 - **Cadence** — on every new bundle, and every `enforce.interval` (default 30 minutes) to correct drift.
   `mode: audit` observes and diffs only.
 - **Reports** — per resource: status, a digest of observed state (never file content), timings, a
@@ -218,7 +219,12 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
 - **Before every launch** (executor): a non-core digest must still be pinned by the currently accepted
   bundle, and a core plugin's envelope must still verify. Then go-plugin launches with
   `SecureConfig{Checksum: pin, Hash: sha256.New()}`, `AllowedProtocols: [ProtocolGRPC]`, `AutoMTLS: true`,
-  and `SkipHostEnv: true`.
+  `SkipHostEnv: true`, and a `UnixSocketConfig` that gives each plugin its own socket directory (0013).
+  go-plugin serves on that Unix socket on Linux and macOS, and on loopback TCP on Windows, where it has
+  no named-pipe transport
+  ([`serverListener`](https://github.com/hashicorp/go-plugin/blob/v1.8.0/server.go)). On every
+  platform AutoMTLS authenticates the channel: the executor launched the plugin, so it hands over its
+  client certificate at launch and reads the plugin's from the handshake line.
 - **Environment** — the agent is the only source: name, tier, and ID reach the plugin in the `Init`
   RPC (0013), never as `RACKMARSHAL_PLUGIN_<NAME>_ENVIRONMENT_*` variables, which `host.Launch` refuses. A
   plugin needs no environment configuration of its own to start.
@@ -526,7 +532,7 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
   root.
 - **Fully unprivileged agent with sudo rules** — too coarse to express per-resource needs, and hard to
   audit.
-- **Linking sigstore-go into the agent binary** — adds about 59 modules to the agent (102 instead of 44)
+- **Linking sigstore-go into the agent binary** — adds about 58 modules to the agent (102 instead of 44)
   and runs them in the root executor, and a Rackmarshal-built verifier would re-implement security-critical
   checks; see [Sigstore verifier measurements](#sigstore-verifier-measurements).
 - **Provisioner-only verification** (the previous draft) — no verifier process on hosts, but a
@@ -601,5 +607,4 @@ Prefix `RACKMARSHAL_AGENT_`; the gateway client uses `RACKMARSHAL_AGENT_GATEWAY_
   [systemd.resource-control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html)
   — `IPAddressAllow=` and `IPAddressDeny=` take addresses and prefixes.
 - [nfpm](https://nfpm.goreleaser.com) — deb, rpm, and apk packaging.
-- [`kubeadm join`](https://kubernetes.io/docs/reference/setup-tools/kubeadm/kubeadm-join/).
 - [go-cli-starter](https://github.com/servercurio/go-cli-starter) — cobra, `ants`, `serve` daemon.

@@ -667,7 +667,7 @@
           <div class="panel-head"><h3>Identity</h3></div>
           <div class="panel-body">
             <dl class="kv">
-              <dt>SPIFFE ID</dt><dd>spiffe://k7m2q9x4bt6vn8rc3wzhy5jd1f/agent/4b8n2c9v5k</dd>
+              <dt>SPIFFE ID</dt><dd>spiffe://q3fz7k2m5x4c6r3t6y5b7n2w7a/agent/4b8n2c9v5k</dd>
               <dt>Agent version</dt><dd>0.4.2</dd>
               <dt>Certificate</dt><dd>serial 3f:a1:09:cc &middot; expires 2026-09-23T04:37:00Z</dd>
               <dt>Enrolled</dt><dd>2026-06-02T11:04:18Z</dd>
@@ -1111,7 +1111,7 @@
       <div class="page-head">
         <div>
           <h1>Enrollment tokens</h1>
-          <p>Single-use credentials that enrol a new host into <strong>qa-east</strong>.</p>
+          <p>Single-use credentials that enroll a new host into <strong>qa-east</strong>.</p>
         </div>
         <div class="spacer"></div>
         <button class="btn btn-primary" type="button" data-form="enrollment">Create token</button>
@@ -1352,7 +1352,7 @@
           { id: "labels", label: "Labels", value: "role=web" },
           { id: "ttl", label: "Expires in", type: "select", options: ["15 minutes", "1 hour", "24 hours"] }
         ],
-        secret: function () { return "rm1.k7m2q9x4bt6vn8rc3wzhy5jd1f.9f2c4e7a.en-" + rid(6) + "." + rid(32); },
+        secret: function () { return "rm1.q3fz7k2m5x4c6r3t6y5b7n2w7a.9f2c4e7a.en-" + rid(6) + "." + rid(32); },
         target: "#enroll-table tbody",
         row: function (v) {
           return "<td class='mono'>en-" + rid(6) + "</td><td>Dana Okafor</td>" +

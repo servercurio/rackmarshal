@@ -69,7 +69,7 @@ The starters' logging differs by template:
 common/
 ├── pkg/
 │   ├── environment/          # Tier, Config, Validate, Hardened, AllowLastResort
-│   ├── service/              # Info{Name, Version, InstanceID}, NewInstanceID
+│   ├── service/              # Info{Namespace, Name, Version, InstanceID}, Namespace, NewInstanceID
 │   ├── logging/              # Config, Initialize, Default, Access, Internal, TraceHook
 │   ├── logging/logfmt/       # human-readable console writer
 │   ├── logging/otlpsink/     # zerolog to OpenTelemetry log bridge
@@ -87,7 +87,8 @@ common/
 ```go
 // After the starter's Configure(): defaults → file → RACKMARSHAL_INVENTORY_* → flags.
 if err := cfg.Environment.Validate(); err != nil { return err } // name and known tier required
-svc := service.Info{Name: "inventory", Version: version.Number(), InstanceID: service.NewInstanceID()}
+svc := service.Info{Namespace: service.Namespace, Name: "inventory", // Namespace is "rackmarshal"
+    Version: version.Number(), InstanceID: service.NewInstanceID()}
 logging.Initialize(cfg.Logging, cfg.Environment, svc)
 
 shutdown, err := telemetry.Setup(ctx, cfg.Telemetry, cfg.Environment, svc,
@@ -151,7 +152,7 @@ func (c *Config) AllowLastResort(feature string, log *zerolog.Logger) error
   control character — newline and carriage return included — per [logfmt](https://brandur.org/logfmt),
   and a quoted value is escaped as [`strconv.Quote`](https://pkg.go.dev/strconv#Quote) escapes it
   (`\"`, `\\`, `\n`, `\r`, and `\x`/`\u` for other control characters), so no value can end a line or
-  start a new one. Colour is used only when stdout is a terminal *and* the tier is `development`;
+  start a new one. Color is used only when stdout is a terminal *and* the tier is `development`;
   `mattn/go-isatty` and `go-colorable` are already linked for it. `console.format` may be set to `json`
   for a deployment whose collector still scrapes container stdout.
 - **Timestamps** — `time` is written in RFC 3339 with nanoseconds, in UTC, using
@@ -172,9 +173,9 @@ func (c *Config) AllowLastResort(feature string, log *zerolog.Logger) error
 - **OTLP sink** — `logging/otlpsink` is a log appender in the sense the OpenTelemetry
   [Logs Bridge API](https://opentelemetry.io/docs/specs/otel/logs/api/) defines: zerolog stays the API
   that Rackmarshal code calls, and the bridge turns each encoded event into an
-  [`otel/log.Record`](https://pkg.go.dev/go.opentelemetry.io/otel/log#Record) emitted through a
-  `LoggerProvider` from `otel/sdk/log`. No Rackmarshal code calls the OpenTelemetry log API directly, so
-  adopting OTLP changes no call sites.
+  [`otel/log.Record`](https://pkg.go.dev/go.opentelemetry.io/otel/log#Record) and emits it into the
+  `LoggerProvider` from `otel/sdk/log`, whose batch processor feeds `otlphttp.LogExporter`. No Rackmarshal
+  code calls the OpenTelemetry log API directly, so adopting OTLP changes no call sites.
 
 | zerolog | `log.Record` | Note |
 |---------|--------------|------|
@@ -182,13 +183,16 @@ func (c *Config) AllowLastResort(feature string, log *zerolog.Logger) error
 | `time` | `SetTimestamp` | `SetObservedTimestamp` is the time the sink received it |
 | level | `SetSeverity`, `SetSeverityText` | mapping below |
 | `error` | `SetErr` | |
-| `trace_id`, `span_id`, `trace_flags` | the record's trace context | not attributes |
+| `trace_id`, `span_id`, `trace_flags` | the `ctx` passed to `Logger.Emit` | not attributes; `Record` has no trace setter |
 | everything else | `AddAttributes`, typed | `json.Number` becomes int64 or float64 |
 
   Trace context is the place the two mechanisms have to meet, and they meet through the existing hook
   rather than beside it: `TraceHook` remains the only thing that reads a span out of a context, and the
-  bridge parses the `trace_id` and `span_id` it wrote back out of the encoded event. One path in, so a
-  console line and its OTLP record can never disagree about which trace they belong to.
+  bridge parses the `trace_id`, `span_id`, and `trace_flags` it wrote back out of the encoded event,
+  rebuilds a `trace.SpanContext`, and passes it to `Logger.Emit` in a context from
+  [`trace.ContextWithSpanContext`](https://pkg.go.dev/go.opentelemetry.io/otel/trace#ContextWithSpanContext),
+  from which the SDK fills the record's trace fields. One path in, so a console line and its OTLP record
+  can never disagree about which trace they belong to.
 
   Severity follows
   [the OpenTelemetry severity numbers](https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber),
@@ -212,13 +216,14 @@ logs:
 
 - **`Setup`** builds a resource with the same `service.*` (including `service.namespace`),
   `deployment.environment.name`, and `rackmarshal.environment.*` attributes, so logs, traces, and metrics
-  all group by product and by component without a backend-side mapping rule. It then creates a `TracerProvider` with a batch span processor and
-  `ParentBased(TraceIDRatioBased(ratio))` sampling, a `MeterProvider` with a periodic reader, a
-  `LoggerProvider` with a batch processor feeding `logging/otlpsink`, and the global W3C
-  `propagation.TraceContext` propagator. All four share one resource, so a log record, its span, and the
-  metrics around it carry identical `service.*` and `rackmarshal.environment.*` attributes and join on the
-  backend without a mapping rule. OpenTelemetry errors go to `logging.Default`,
-  rate-limited. When disabled, `Setup` installs no-op providers but keeps the propagator.
+  all group by product and by component without a backend-side mapping rule. It then creates a
+  `TracerProvider` with a batch span processor and `ParentBased(TraceIDRatioBased(ratio))` sampling, a
+  `MeterProvider` with a periodic reader, a `LoggerProvider` that `logging/otlpsink` emits into and whose
+  batch processor feeds `LogExporter`, and the global W3C `propagation.TraceContext` propagator. The
+  three providers share one resource, so a log record, its span, and the metrics around it carry
+  identical `service.*` and `rackmarshal.environment.*` attributes and join on the backend without a
+  mapping rule. OpenTelemetry errors go to `logging.Internal`, rate-limited. When disabled, `Setup`
+  installs no-op providers but keeps the propagator.
 - **Standard variables** — `OTEL_*` variables are not read; configuration has one path.
 - **Wrappers** — `WrapTransport(http.RoundTripper)` injects `traceparent` and records client spans, for
   `sdk`'s `WithTransportWrapper`. `WrapHandler(http.Handler, ...Option)` extracts the incoming
@@ -251,8 +256,10 @@ logs:
   `tls.caBundle`, or the environment CA bundle by default. A client certificate, if any, comes from the
   `WithClientTLS` callback, so renewed service certificates apply without restarts.
 - **Transform** — ported from opentelemetry-go's `exporters/otlp/otlptrace/internal/tracetransform` and
-  `exporters/otlp/otlpmetric/otlpmetrichttp/internal/transform` (both present at v1.46.0), with imports
-  switched from `go.opentelemetry.io/proto/otlp` to the slim module. Apache-2.0 notices are kept, and the
+  `exporters/otlp/otlpmetric/otlpmetrichttp/internal/transform` (both present at v1.46.0), and the logs
+  transform in `exporters/otlp/otlplog/otlploghttp/internal/transform` (present on `main`; its tag
+  alongside log v0.22.0 is unverified), with imports switched from `go.opentelemetry.io/proto/otlp` to the
+  slim module. Apache-2.0 notices are kept, and the
   port is re-synced on every OpenTelemetry upgrade.
 
 #### Shipping to Loki
@@ -277,6 +284,26 @@ operator should configure:
 `rackmarshal.environment.id` is a label in a single-environment Loki and structured metadata in a shared
 one, which is the only entry an operator has to think about.
 
+Loki's own defaults do not produce this split: its default promoted resource attributes include
+`service.instance.id` and omit `service.version`. The label set therefore has to replace Loki's defaults
+rather than add to them, in `limits_config.otlp_config.resource_attributes`
+([Loki OTLP ingestion](https://grafana.com/docs/loki/latest/send-data/otel/)):
+
+```yaml
+limits_config:
+  otlp_config:
+    resource_attributes:
+      ignore_defaults: true
+      attributes_config:
+        - action: index_label
+          attributes:
+            - service.namespace
+            - service.name
+            - service.version
+            - deployment.environment.name
+            - rackmarshal.environment.tier
+```
+
 ### Dependencies
 
 - **Rackmarshal repositories** — none. Consumed by every Rackmarshal Go executable and by `sdk`'s examples.
@@ -293,12 +320,13 @@ one, which is the only entry an operator has to think about.
   The log signal adds exactly those two modules: every other requirement of `otel/sdk/log` v0.22.0 was
   already linked, and the slim proto module already carried `collector/logs/v1`. `go list -m all`
   reports 34 modules and no gRPC. This measured list seeds `deps.allow`.
-- **Versions** — v1.46.0 is the latest stable OpenTelemetry Go release (v1.47.0-rc.1 exists), pinned
-  exactly. The log API and SDK are v0.22.0 and **not yet 1.0**, so they carry no compatibility guarantee
-  and may break on a minor bump; they are pinned exactly and upgraded deliberately. That is the real
-  cost of adopting the signal now, and it is accepted because the blast radius is contained: no
-  Rackmarshal code imports `otel/log`, only `logging/otlpsink` and `telemetry/otlphttp` do, so a breaking
-  change is a change in two files in this repository and in none of its consumers.
+- **Versions** — v1.46.0 is the latest stable OpenTelemetry Go release as of 2026-09-20 (v1.47.0-rc.1
+  exists), pinned exactly. The log API and SDK are v0.22.0 and **not yet 1.0**, so they carry no
+  compatibility guarantee and may break on a minor bump; they are pinned exactly and upgraded
+  deliberately. That is the real cost of adopting the signal now, and it is accepted because the blast
+  radius is contained: no Rackmarshal code imports `otel/log`, only `logging/otlpsink` and
+  `telemetry/otlphttp` do, so a breaking change is a change in two files in this repository and in none
+  of its consumers.
 - **Tests** use the standard library and `testify`, which every starter already requires. The official
   exporters appear only in the nested `parity` module.
 
@@ -319,7 +347,8 @@ Dropped logs are visible in the metric, and the console sink is unaffected, so n
   headers come from `headersFile` and are never logged. Values marked `x-rackmarshal-sensitive`
   ([0002](0002-api-schema.md)) are never logged.
 - **TLS for telemetry.** A plaintext `http://` endpoint is a last-resort feature (`plaintext-telemetry`):
-  refused in `production` without an override, and warned in `staging`.
+  refused in `production` without an override, and allowed and logged at `info` in other tiers, as
+  `AllowLastResort` does for every feature ([CONVENTIONS.md](CONVENTIONS.md#environment)).
 - **Bounded input.** Incoming `traceparent` values at public ingress start new traces, exporter
   responses are size-capped, and field content cannot forge log lines in either sink: zerolog
   JSON-escapes values for the OTLP sink and the `json` console format, and the logfmt console writer
@@ -329,10 +358,10 @@ Dropped logs are visible in the metric, and the console sink is unaffected, so n
 
 | Default              | `production`              | `staging`       | `test`          | `development`   |
 |----------------------|---------------------------|-----------------|-----------------|-----------------|
-| Console log format   | logfmt                    | logfmt          | logfmt          | logfmt, colour  |
+| Console log format   | logfmt                    | logfmt          | logfmt          | logfmt, color   |
 | OTLP log sink        | on                        | on              | off             | off             |
 | Trace sample ratio   | 0.1                       | 0.1             | 1.0             | 1.0             |
-| Plaintext telemetry  | refused unless overridden | allowed, warned | allowed         | allowed         |
+| Plaintext telemetry  | refused unless overridden | allowed, logged | allowed, logged | allowed, logged |
 | Last-resort features | refused unless overridden | allowed, logged | allowed, logged | allowed, logged |
 
 Explicit configuration overrides every default except the `production` last-resort gate, which requires
@@ -393,8 +422,8 @@ the loop cannot form.
 - **Exporter** — an `httptest` collector decodes protobuf and gzip. Tests cover retry codes and
   `Retry-After` with a fake clock, partial success, the response cap, client-certificate rotation, and
   flush on shutdown.
-- **Parity** — for fixed inputs, the ported transform's protobuf output equals the official exporter's,
-  in the nested `parity` module.
+- **Parity** — for fixed spans, metrics, and log records, the ported transforms' protobuf output equals
+  the official exporters' (including `otlploghttp`), in the nested `parity` module.
 - **Hygiene** — `-race`, allocation benchmarks on the export path, and the module allowlist.
 
 ## Alternatives considered

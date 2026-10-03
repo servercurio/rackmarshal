@@ -7,7 +7,7 @@
 - **Status:** Draft
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-18
-- **Summary:** One catalogue specifying every desired-state kind field by field. It is the design input
+- **Summary:** One catalog specifying every desired-state kind field by field. It is the design input
   the Go structures are first written from; once those structures exist they are the single source, and
   the OpenAPI 3.0 component schemas and the reference documentation are generated from them. There are
   no standalone JSON Schema files. This reverses the contract-first direction
@@ -32,7 +32,7 @@ it produces is plausible rather than verified, because there was nothing to veri
 
 - Specify every kind and every field in one place, precisely enough to write the Go structures from.
 - Record the invariants a type cannot carry — conflicts, ordering, tenancy, phase restrictions.
-- Fix the generation direction so that no two artefacts describing a kind can disagree.
+- Fix the generation direction so that no two artifacts describing a kind can disagree.
 
 **Non-goals**
 
@@ -41,6 +41,8 @@ it produces is plausible rather than verified, because there was nothing to veri
 - Plugin-defined resource kinds, whose schemas travel in the plugin's required provisioner bundle —
   [0021](0021-plugin-extensibility.md); the wire contract that carries them is
   [0013](0013-agent-plugin-sdk.md).
+- The `Plugin` and `PluginPublisher` documents — specified in [0021](0021-plugin-extensibility.md) and
+  [0014](0014-agent-plugins.md); `Plugin` supersedes 0014's `AgentPlugin`.
 - Inventory's endpoint and class schemas, which are a different tree — [0009](0009-inventory.md).
 
 ## Proposal
@@ -49,13 +51,13 @@ it produces is plausible rather than verified, because there was nothing to veri
 
 Two phases, and the distinction matters more than anything else in this document.
 
-**Bootstrap.** This catalogue is the specification. The Go types in `api-schema` under
+**Bootstrap.** This catalog is the specification. The Go types in `api-schema` under
 `pkg/desiredstate/v1alpha1` are written from it, by hand, once. That repository holds the shared types
 for service APIs, OPA, and these manifests ([0002](0002-api-schema.md)).
 
 **Steady state.** The Go types are the single source of truth. Everything else is generated:
 
-| Artefact                                | Generated from | Drift check                    |
+| Artifact                                | Generated from | Drift check                    |
 |-----------------------------------------|----------------|--------------------------------|
 | OpenAPI 3.0 component schemas for kinds | Go types       | regenerate in CI, fail on diff |
 | Reference documentation for each kind   | Go types       | regenerate in CI, fail on diff |
@@ -65,7 +67,7 @@ There are no standalone JSON Schema files. A kind is described by its Go type an
 is the whole point: a second description is a second thing to disagree with.
 
 The last row is the one that keeps this document honest. Once the types exist, the field tables below
-are regenerated from them rather than maintained by hand, so the catalogue cannot drift from the code
+are regenerated from them rather than maintained by hand, so the catalog cannot drift from the code
 the way the schemas and the wizard already drifted from each other. What stays hand-written here is
 everything a struct tag cannot carry: the rationale, and the invariants in
 [Invariants](#invariants-a-type-cannot-carry).
@@ -113,13 +115,14 @@ A named set of resources, the endpoints they apply to, and whether they are enfo
 
 | Field                       | Type              | Required | Notes                                    |
 |-----------------------------|-------------------|----------|------------------------------------------|
-| `selector.matchLabels`      | map[string]string | no       | All pairs must match                      |
-| `selector.matchExpressions` | `[]Expression`    | no       | `key`, `operator`, `values`               |
-| `endpoints`                 | []string          | no       | Explicit endpoint names, stored as IDs    |
+| `all`                       | bool              | no       | `true` matches every endpoint            |
+| `selector.matchLabels`      | map[string]string | no       | All pairs must match                     |
+| `selector.matchExpressions` | `[]Expression`    | no       | `key`, `operator`, `values`              |
+| `endpoints`                 | []string          | no       | Explicit endpoint names, stored as IDs   |
 
-At least one of `matchLabels`, `matchExpressions`, or `endpoints` must be present; a `Target` matching
-everything is written explicitly as `matchExpressions: [{key: name, operator: Exists}]` rather than by
-omission, so a set never applies estate-wide by accident.
+A `Target` sets either `all: true` or at least one of `matchLabels`, `matchExpressions`, and
+`endpoints`, never both. Matching everything is written explicitly as `all: true` rather than by omission
+or by an expression that happens to match every endpoint, so a set never applies fleet-wide by accident.
 
 Names in `endpoints` resolve to endpoint IDs within the writing tenant at admission, and the set stores
 the IDs. An unknown name is rejected. Because names are unique only among non-retired endpoints
@@ -140,12 +143,19 @@ levels.
 | `kind`           | string        | yes      | A host resource kind, or a driver-defined device kind   |
 | `metadata.name`  | string        | yes      | Unique within the set, per kind                         |
 | `spec`           | kind-specific | yes      |                                                         |
-| `dependsOn`      | []string      | no       | `metadata.name` of resources in the same set            |
+| `dependsOn`      | []string      | no       | `Kind/name` of resources in the same set                |
 
-`dependsOn` names must resolve within the same `DirectiveSet`; a reference to a resource in another set
-is rejected at admission rather than resolved across sets. Cycles are rejected.
+A reference is `Kind/name`, such as `Package/nginx`: names are unique only per kind, so a bare name
+could match a `Package` and a `Service` at once. `dependsOn` references must resolve within the same
+`DirectiveSet`; a reference to a resource in another set is rejected at admission rather than resolved
+across sets. Cycles are rejected.
 
 ### Host resource kinds
+
+The host kinds — `File`, `Directory`, `Package`, and `Service`, provided by the core `files`,
+`packages`, and `services` plugins ([0014](0014-agent-plugins.md)) — are Linux-only in `v1alpha1`. Their
+Windows semantics (ACLs instead of mode and owner, Windows package managers, SCM services) are deferred,
+as 0014 defers Windows services. `Directory` is not yet specified here (see Open questions).
 
 **`File`**
 
@@ -183,10 +193,11 @@ it makes the applied state depend on when the run happened rather than on the do
 | `name`     | string  | yes      |           | Unit or service name                           |
 | `state`    | enum    | no       | `started` | `started`, `stopped`                           |
 | `enabled`  | bool    | no       | `true`    | Start at boot                                  |
-| `reloadOn` | []string| no       |           | `metadata.name` of resources that trigger reload |
+| `reloadOn` | []string| no       |           | `Kind/name` of resources that trigger reload   |
 
 `reloadOn` is the ordering primitive that matters in practice: a `File` that changes triggers a reload of
-the `Service` naming it, without the file needing to know what consumes it.
+the `Service` naming it (`reloadOn: [File/nginx-conf]`), without the file needing to know what consumes
+it.
 
 ### Policy
 
@@ -257,8 +268,8 @@ struct tag expresses them, and they are what the generated schemas cannot check 
   endpoints; admission decides from the endpoint's path in `inventory` (0011).
 - **Tenancy.** Every reference a document makes — `credentialRef`, `scriptRef`, `dependsOn`,
   `target.endpoints` — resolves within the writing tenant only.
-- **Ordering.** `dependsOn` and `reloadOn` name resources in the same set; cycles and dangling names are
-  rejected at admission, not at apply.
+- **Ordering.** `dependsOn` and `reloadOn` name resources in the same set as `Kind/name`; cycles, bare
+  names, and references whose kind or name does not resolve are rejected at admission, not at apply.
 - **Generation monotonicity.** A bundle carrying these documents is accepted by an agent only if its
   `generation` advances, within the bound 0012 sets (`bundle.maxGenerationJump`).
 
@@ -273,7 +284,7 @@ OpenAPI component schemas between versions.
 
 - **Round trip** — every example decodes into the Go structures, re-encodes, and still validates against
   the kind's OpenAPI component schema.
-- **Generated artefact drift** — OpenAPI component schemas, reference docs, and this document's field
+- **Generated artifact drift** — OpenAPI component schemas, reference docs, and this document's field
   tables are regenerated in CI and the build fails on any diff.
 - **Invariant tests** — one failing example per rule in [Invariants](#invariants-a-type-cannot-carry),
   asserting the expected error code and JSON pointer rather than just a failure.
@@ -282,12 +293,12 @@ OpenAPI component schemas between versions.
 
 ## Alternatives considered
 
-- **Keeping contract-first, with the catalogue as prose** — the position 0002 took and this document
-  reverses. It keeps `sdk` startable on day one, but leaves three artefacts describing one
+- **Keeping contract-first, with the catalog as prose** — the position 0002 took and this document
+  reverses. It keeps `sdk` startable on day one, but leaves three artifacts describing one
   kind — hand-written schema, hand-written Go type, and prose — with nothing forcing agreement. That is
   how the wizard came to generate inferred YAML.
 - **A machine-readable block per kind in this document**, extracted by a generator. Considered because it
-  would make the catalogue itself the build input. Rejected once the direction was settled: after
+  would make the catalog itself the build input. Rejected once the direction was settled: after
   bootstrap the Go structures are the source, so a parseable Markdown block would be a second source
   competing with them.
 - **Generating the Go types from JSON Schema** rather than the reverse. Viable, and it keeps a schema
@@ -299,7 +310,7 @@ OpenAPI component schemas between versions.
 
 ## Open questions
 
-- **Bootstrap mechanics** — who writes the first Go structures from this catalogue, and is that reviewed
+- **Bootstrap mechanics** — who writes the first Go structures from this catalog, and is that reviewed
   against it field by field, or only against the examples?
 - **Reference documentation format** — godoc, a generated Markdown reference, or both? If Markdown, does
   it live in `api-schema` or here beside this document?
@@ -307,9 +318,11 @@ OpenAPI component schemas between versions.
   tool does that, and does it rewrite the file in place or emit a fragment this document includes?
 - **`matchExpressions` operators** — `In`, `NotIn`, `Exists`, `DoesNotExist` mirrors Kubernetes. Is that
   the full set, and is a regex operator wanted for label values?
-- **Driver-defined device kinds** — 0011 leaves their schema publication open, and 0013 asks the same for
-  plugin kinds. Both land in the same place: what does a third party publish so this catalogue's rules
-  apply to their kinds too?
+- **Built-in driver kinds** — third-party kinds, host or device, publish their schemas in the plugin's
+  required provisioner bundle ([0021](0021-plugin-extensibility.md)), which answers the question 0013
+  raised. The kinds the built-in `http`, `ssh`, and `netconf` drivers enforce (0011) are not yet in this
+  catalog: do they become Go types in `api-schema` like the host kinds?
+- **`Directory`** — 0014's `files` plugin provides it, but its fields are not specified here yet.
 
 ## References
 

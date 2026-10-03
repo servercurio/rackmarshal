@@ -8,10 +8,10 @@
 - **Owner:** Nathan Klick
 - **Date:** 2026-09-15
 - **Summary:** `plugin-starter` is a Rackmarshal-owned GitHub template, derived from `go-cli-starter`,
-  with a working example plugin wired to `agent-plugin-sdk`. It includes a rename tool, a local
-  fake agent, and CI that produces the same signed, SBOM-backed release assets as the first-party
-  plugins, so third parties can meet `provisioner`'s import verification and the agents' on-host
-  validator without Rackmarshal's help. Third-party plugins are never core-signed.
+  with a working example plugin wired to `agent-plugin-sdk`. It includes a rename tool, a local fake
+  agent and fake provisioner, and CI that produces the same signed, SBOM-backed release assets as the
+  first-party plugins, so third parties can meet `provisioner`'s import verification and the agents'
+  on-host validator without Rackmarshal's help. Third-party plugins are never core-signed.
 
 > An initial draft with concrete proposals, bounded by the
 > [Resolved decisions](0001-project-repositories.md#resolved-decisions) in 0001. Conventions other
@@ -47,7 +47,8 @@ install, so a correct release pipeline must be the default.
 ### Responsibilities
 
 - An example plugin exercising both capability types that passes the conformance suite.
-- Author tooling (rename, fake agent, Taskfile), CI workflows, and author documentation.
+- Author tooling (rename, fake agent, fake provisioner, Taskfile), CI workflows, and author
+  documentation.
 - Tracking upstream `go-cli-starter`, and publishing releases that downstream repositories can track.
 
 ### Interfaces
@@ -62,13 +63,15 @@ plugin-starter/
 │   ├── config/                          # Config{Logging, StateDir, Greeting}
 │   ├── cli/                             # cobra: serve (default), version, manifest, check-config
 │   └── env/  version/                   # kept from go-cli-starter
-├── manifest.yaml                        # embedded; least privilege
-├── provisioner/                         # the required provisioner bundle (0021)
-│   ├── schemas/marker.schema.json       # JSON Schema 2020-12 for the example kind
-│   ├── schemas/marker.result.json       # result schema both ends validate against
+├── manifest.yaml                        # embedded; least privilege; `task bundle` copies it in
+├── provisioner/                         # the required provisioner bundle, in 0021's layout
+│   ├── schemas/plugins.example.com/v1alpha1/
+│   │   ├── Marker.json                  # JSON Schema 2020-12 for the example kind
+│   │   └── Marker.result.json           # result schema both ends validate against
 │   └── policy/host.rego                 # deny-only, scoped to this plugin's kinds
 ├── testdata/                            # sample resources, development environment
 ├── tools/rename/  tools/fakeagent/      # standard library + SDK only
+├── tools/fakeprovisioner/               # also OPA, to compile the bundle's policy (0011)
 ├── docs/                                # writing, security, testing, releasing, licensing, upgrading
 ├── .starter/upstream.yaml               # upstream repository, commit, path classes
 ├── .github/workflows/
@@ -97,7 +100,7 @@ Removed from `go-cli-starter`:
   a deny-only `host` policy and **no** provisioner service, which is the shape most plugins want: the
   control plane validates and polices the kind while nothing extra runs beside the provisioner
   ([0021](0021-plugin-extensibility.md)). `docs/` explains when a service is worth adding.
-- **Result** — `Apply` returns a small `result_json` conforming to `marker.result.json`, so the template
+- **Result** — `Apply` returns a small `result_json` conforming to `Marker.result.json`, so the template
   exercises the round trip and its 16 KiB limit rather than leaving authors to discover both.
 - **Rename** — `task rename -- -name acme-backup -module github.com/acme/rackmarshal-plugin-acme-backup`
   (plus `-group` for the example kind; runs `go run ./tools/rename`) rewrites the module path, `cmd/`,
@@ -285,8 +288,11 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
 - **Copyleft plugins** — the GPL FAQ says fork-and-exec plugins that exchange "complex data structures"
   with the host "can make them one single combined program". Separate processes alone don't settle
   licensing, so authors considering the GPL should get legal advice.
-- **Names** — `rackmarshal-plugin-<vendor>-<name>` avoids collisions. A name implies no endorsement; trust
-  comes only from the publisher identity.
+- **Names** — a plugin name is a lowercase DNS label (0013) and must be unique within an environment,
+  because the `Plugin` document, the binary `rackmarshal-plugin-<name>`, and the provisioner service's
+  SPIFFE ID all derive from it ([0021](0021-plugin-extensibility.md)). Prefixing the vendor
+  (`acme-backup`) avoids collisions between publishers and is recommended, not required; 0021's
+  `bigip` example omits it. A name implies no endorsement; trust comes only from the publisher identity.
 
 ### Testing
 
@@ -319,8 +325,9 @@ removed:  [Dockerfile, internal/database/, internal/pool/, internal/obfusicate/,
 
 - **Starter license** — keep Apache-2.0 (proposed), or offer the template under 0BSD, which would
   change 0001's shared meta for this repository?
-- **Third-party kinds** — how are groups named, and how do schemas reach `provisioner` and the
-  agent (0013, [0002](0002-api-schema.md))?
+- **Third-party kinds** — how are groups named (0013, [0002](0002-api-schema.md))? How their schemas
+  reach `provisioner` and the agent is settled: the required provisioner bundle carries them
+  ([0021](0021-plugin-extensibility.md)).
 - **Publisher onboarding** — documentation only, or a Rackmarshal-maintained list of known identities?
 - **Platforms** — should darwin and windows become defaults once the agent supports them (0012)?
 - **Sync signing** — which token and GPG key sign the sync commits in downstream repositories?

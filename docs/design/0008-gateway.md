@@ -90,6 +90,16 @@ document from `api-schema`'s `pkg/openapi` and builds two Echo routers:
 3. Anything unmatched returns `404` with the problem code `route_not_found`, so an `internal` operation
    and a nonexistent one look the same from outside.
 
+Credentials follow the audience, not the `security` field. The contracts are OpenAPI 3.0, which has no
+mutual-TLS security scheme and no role names in non-OAuth security requirements (both arrive in 3.1), so
+`common/v1` defines `bearerAuth` alone (0002). Operator operations list `bearerAuth` in `security` and
+name their accepted roles in `x-rackmarshal-roles`; agent and internal operations declare `security: []`
+and rely on `x-rackmarshal-audience`, which the gateway and services enforce as mutual TLS. An operation
+with several audiences lists `bearerAuth` when `operator` is one of them, and each caller is held to its
+own audience's credential: a bearer token with one of `x-rackmarshal-roles` on the operator ingress, a
+verified agent certificate on the agent ingress, and an allowed service certificate on a direct
+`internal` call.
+
 Before matching, the gateway rejects with `400` any path that contains `..` segments, `//`, percent-encoded
 `/` or `\`, or invalid UTF-8, and any query string that `url.ParseQuery` rejects. That way the gateway
 and the upstream service never interpret a request differently, a risk the `ReverseProxy.Rewrite`
@@ -146,8 +156,11 @@ func With(cfg Config) echo.MiddlewareFunc
 ```
 
 Inside `Rewrite` it calls `r.SetURL(cfg.Target)`, sets `r.Out.Host`, applies `StripRequest` and
-`StripPrefixes`, calls `r.SetXForwarded()` so the client address comes from the gateway's extractor rather
-than the inbound header, and only then applies `SetHeaders`. The gateway binds one per upstream:
+`StripPrefixes`, and calls `r.SetXForwarded()`. That sets `X-Forwarded-Host` and `X-Forwarded-Proto`, but
+takes `X-Forwarded-For` from the direct peer's `RemoteAddr`, which behind a trusted load balancer is the
+balancer. The middleware therefore overwrites `X-Forwarded-For` with Echo's `c.RealIP()`, so the
+trusted-proxy extraction under Rate limiting applies rather than the inbound header or the TCP peer, and
+only then applies `SetHeaders`. The gateway binds one per upstream:
 
 ```go
 proxy.With(proxy.Config{
@@ -161,7 +174,7 @@ proxy.With(proxy.Config{
             "X-Request-Id":            {requestID(c.Request().Context())},
         }
     },
-    ModifyResponse: scrubResponseHeaders,           // drop Server; enforce Cache-Control: no-store
+    ModifyResponse: scrubResponseHeaders,           // drop Server; Cache-Control: no-store (see below)
     ErrorHandler:   problemUpstreamError,           // 502 upstream_unavailable, 504 upstream_timeout
 })
 ```
@@ -202,8 +215,9 @@ only to logs.
   `enroll`, `principal`), `common` (`logging`, `environment`, `telemetry`).
 - **New third-party module** — [`github.com/go-jose/go-jose/v4`](https://github.com/go-jose/go-jose)
   v4.1.5, for JWKS parsing and JWS verification. Its `go.mod` has no requirements, measured on 2026-09-15.
-- **Kept from the starter** — Echo v5.3.1, which links only `golang.org/x/time` (rate limiter),
-  `golang.org/x/net` (`netutil.LimitListener`), zerolog, `errorx`, and `yaml.v3`.
+- **Kept from the starter** — Echo v5.3.1, and the modules the starter already links beside it:
+  `golang.org/x/time` (rate limiter), `golang.org/x/net` (`netutil.LimitListener`), zerolog, `errorx`, and
+  `yaml.v3`.
 - **New starter package** — `internal/middleware/proxy` in `go-echo-starter`, arriving here by seeding
   like the rest of the starter. It adds no module: it needs only Echo and the standard library, both
   already linked. The starter stays a template with nothing exported, rather than becoming an importable
@@ -229,9 +243,9 @@ and tenant lookups, `nextUpdate` for revocation. No cache extends the window in 
 certificate is accepted, because that window is the TTL whether one replica or twenty hold the entry.
 
 Rate limits are the one property that changes with replica count, and they change linearly: the
-configured values in the table above are **per replica**, so N replicas admit N times the traffic
-before limiting. That is accepted rather than worked around, because none of the buckets is the
-authoritative control for what it protects.
+configured values in the Rate limiting table below are **per replica**, so N replicas admit N times
+the traffic before limiting. That is accepted rather than worked around, because none of the buckets
+is the authoritative control for what it protects.
 
 | Bucket | Why per-replica is acceptable |
 |---|---|
@@ -265,9 +279,11 @@ Token formats belong to [0006](0006-identity.md). For JWT access tokens
   startup). `aud` must contain `spiffe://<environment-id>/service/gateway`. A token from another
   environment therefore fails on both issuer and audience.
 - **Time** — `exp` is required, `nbf` and `iat` are honored, and clock skew is at most 60 seconds.
-- **Coarse authorization** — a `bearerAuth` security requirement lists the role names the operation
-  needs, which OpenAPI 3.1 permits for non-OAuth schemes. The gateway requires at least one of them in
-  `rackmarshal_roles`. Tenant- and resource-level checks stay in services.
+- **Coarse authorization** — each operator operation names the roles it accepts in
+  `x-rackmarshal-roles`, beside a `bearerAuth` requirement with an empty list, because OpenAPI 3.0
+  allows role names in a requirement only for OAuth 2.0 and OpenID Connect schemes (see Routing and
+  audience enforcement). The gateway requires at least one of them in `rackmarshal_roles`. Tenant- and
+  resource-level checks stay in services.
 - **Opaque API tokens** are exchanged with `identity`'s `token-exchanges` operation over mutual TLS
   for a signed, environment-bound access JWT ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)
   semantics, 0006), which is then verified as above; the result is cached for at most 30 seconds.
@@ -279,9 +295,9 @@ Token formats belong to [0006](0006-identity.md). For JWT access tokens
   `VerifyConnection`, which Go runs "for all connections, including resumptions". `VerifyPeerCertificate`
   is not used, because it is skipped on resumed sessions.
 - **Enrollment route** — middleware rejects any request without a verified agent certificate, unless the
-  matched operation is the agent enrollment operation that 0002 marks `security: []`. The allowlist holds
-  one operation ID, tested from the contract. The enrollment route's body limit is 16 KiB, and its rate
-  limit is the strictest.
+  matched operation is agent enrollment. Every agent operation declares `security: []`, so the exemption
+  cannot come from `security`: the allowlist holds one operation ID, tested from the contract. The
+  enrollment route's body limit is 16 KiB, and its rate limit is the strictest.
 - **Revocation** — `revocation.Checker` from `sdk` implements 0001 exactly: OCSP first, then the
   CRL, each cached until `nextUpdate`, rejecting when neither is available within the window. The gateway
   re-checks the cached status on every request, not only at handshake, so a long-lived HTTP/2 connection
@@ -327,7 +343,10 @@ from private networks.
   `login_verifier` presented with a binding cookie that matches the login challenge, so gateway
   middleware would add nothing.
 - **Responses** — the starter's `Secure` middleware (HSTS, `nosniff`, frame denial) plus
-  `Cache-Control: no-store`.
+  `Cache-Control: no-store`, except on the public documents under `/identity/` that clients are meant to
+  cache: OIDC discovery, the JWKS, `ca.pem`, `crl.der`, and OCSP responses. Those keep `identity`'s own
+  `Cache-Control`, so relying parties and agents can cache them up to `nextUpdate` or the key refresh
+  interval ([RFC 5019 §6](https://www.rfc-editor.org/rfc/rfc5019#section-6) for OCSP).
 - **Body limits** — 1 MiB on the operator ingress and 8 MiB on the agent ingress (inventory reports). Both
   are enforced on the bytes received; decompression limits belong to the service that decodes the body.
 
@@ -401,7 +420,8 @@ omitted here.
 ### Testing
 
 - **Audience matrix** — generated from the contract. Every `internal`-only operation returns `404` on both
-  ingresses, every `operator` operation returns `404` on the agent ingress, and the reverse.
+  ingresses, every operator-only operation returns `404` on the agent ingress, and every agent-only
+  operation returns `404` on the operator ingress.
 - **TLS** — with `sdk` `sdktest`: TLS 1.2 rejected on the agent ingress; missing, expired,
   wrong-trust-domain, and non-agent certificates rejected on every route except enrollment; revoked
   certificates rejected at handshake, on resumption, and mid-connection; connections closed by
@@ -461,9 +481,8 @@ omitted here.
   `pkg/principal` belong in `sdk`?
 - **Unauthenticated operations** — 0002's lint allowlist names only enrollment and health. Add
   `GET /gateway/v1alpha1/environment`?
-- **Agent tenant lookup** — cache TTL, and whether disabling an agent in `identity` should also
-  revoke its certificate.
-- **Role names** in security requirements, or a dedicated `x-rackmarshal-permission` extension?
+- **Agent tenant lookup** — is a 5-minute cache TTL right? Disabling an agent already revokes its
+  certificate in the same transaction (0006), so the revocation check, not this cache, cuts it off.
 
 ## References
 
@@ -485,8 +504,14 @@ omitted here.
 - [`tls.Config`](https://pkg.go.dev/crypto/tls#Config) — `VerifyConnection` runs on resumptions;
   `VerifyPeerCertificate` does not.
 - [go-jose v4](https://github.com/go-jose/go-jose) and [golang-jwt v5](https://github.com/golang-jwt/jwt).
-- [OpenAPI 3.1.1 Security Requirement Object](https://spec.openapis.org/oas/v3.1.1.html#security-requirement-object)
-  — role names for non-OAuth schemes.
+- [OpenAPI 3.0.4 Security Requirement Object](https://spec.openapis.org/oas/v3.0.4.html#security-requirement-object)
+  — role lists only for OAuth 2.0 and OpenID Connect schemes; contrast
+  [3.1.1](https://spec.openapis.org/oas/v3.1.1.html#security-requirement-object), which adds role
+  names and the `mutualTLS` scheme.
+  [Specification Extensions](https://spec.openapis.org/oas/v3.0.4.html#specification-extensions) —
+  the `x-rackmarshal-*` fields.
+- [RFC 5019](https://www.rfc-editor.org/rfc/rfc5019) — OCSP over HTTP GET and its caching
+  recommendations.
 - [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068) (JWT access tokens),
   [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725) (JWT best practices),
   [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) (token exchange),

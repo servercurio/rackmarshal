@@ -78,7 +78,7 @@
   .sec-head { margin-bottom: var(--space-8); display: flex; flex-direction: column; gap: var(--space-2); }
   .sec-head p { color: var(--text-muted); }
 
-  /* ---------- colour ---------- */
+  /* ---------- color ---------- */
   .ramp { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-3); }
   .chip { display: flex; flex-direction: column; gap: 0; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border); }
   .chip-well { height: 96px; }
@@ -271,8 +271,8 @@
         <h1>Heat, held in three rings.</h1>
         <p>
           The Server&nbsp;Curio mark is a heat gradient. Plum at the cool outer ring, rose through the
-          middle, crimson where the metal is worked, and three sand-coloured sparks thrown clear. Rackmarshal
-          takes its whole palette from that object &mdash; no colour in this system was invented beside it.
+          middle, crimson where the metal is worked, and three sand-colored sparks thrown clear. Rackmarshal
+          takes its whole palette from that object &mdash; no color in this system was invented beside it.
         </p>
       </div>
       <div class="hero-mark">
@@ -283,14 +283,14 @@
 
   <div class="wrap">
 
-    <!-- ============ COLOUR ============ -->
-    <section id="colour">
+    <!-- ============ COLOR ============ -->
+    <section id="color">
       <div class="sec-head">
-        <p class="eyebrow">01 &middot; Colour</p>
+        <p class="eyebrow">01 &middot; Color</p>
         <h2>The brand ramp</h2>
         <p>
-          Five values read straight from <code>docs/images/logo.svg</code>, plus the off-white they sit on.
-          These six are fixed. Everything else in the system is derived from them.
+          Four values read straight from <code>docs/images/logo.svg</code>, plus two derived grounds: the
+          near-black and the off-white they sit on. These six are fixed. Everything else in the system is derived from them.
         </p>
       </div>
 
@@ -346,9 +346,9 @@
       </div>
 
       <div class="callout" style="margin-top:var(--space-8)">
-        <strong>Ember is not the action colour.</strong>
+        <strong>Ember is not the action color.</strong>
         <p>
-          Crimson is the brand's loudest value and also the universal colour of failure. Using it for
+          Crimson is the brand's loudest value and also the universal color of failure. Using it for
           primary buttons would make every page look like an incident. Plum carries actions; ember is
           reserved for the mark and for genuinely critical state.
         </p>
@@ -400,7 +400,8 @@
             <tr><td><span class="dot" style="background:#E0A355"></span>warn</td><td class="num">#E0A355</td><td class="num">8.34</td><td class="pass">AAA</td><td>Drift, expiry</td></tr>
             <tr><td><span class="dot" style="background:#4FBF9B"></span>ok</td><td class="num">#4FBF9B</td><td class="num">8.09</td><td class="pass">AAA</td><td>In sync, verified</td></tr>
             <tr><td><span class="dot" style="background:#F7BB7A"></span>spark</td><td class="num">#F7BB7A</td><td class="num">10.79</td><td class="pass">AAA</td><td>Focus ring on dark</td></tr>
-            <tr><td><span class="dot" style="background:#7C5763"></span>border-strong</td><td class="num">#7C5763</td><td class="num">3.16</td><td class="pass">AA&nbsp;1.4.11</td><td>Input and control edges</td></tr>
+            <tr><td><span class="dot" style="background:#8C6673"></span>border-strong</td><td class="num">#8C6673</td><td class="num">3.73</td><td class="pass">AA&nbsp;1.4.11</td><td>Input and control edges; lifted from #7C5763, which failed at 2.97</td></tr>
+            <tr><td><span class="dot" style="background:#37222A"></span>border</td><td class="num">#37222A</td><td class="num">1.25</td><td class="aaa">decorative</td><td>Rules only &mdash; never a control edge</td></tr>
           </tbody>
         </table>
       </div>
@@ -409,7 +410,7 @@
         <strong>Dark-theme critical buttons take an Anvil label, not white.</strong>
         <p>
           White on <code>#EA5468</code> measures 3.52:1 and fails. Anvil on the same fill measures 5.54:1
-          and passes. This is the one place in the system where the label colour flips with the theme.
+          and passes. This is the one place in the system where the label color flips with the theme.
         </p>
       </div>
     </section>
@@ -428,7 +429,7 @@
       <h3>Endpoint drift</h3>
       <p style="color:var(--text-muted);margin-top:var(--space-2)">
         The four values <code>rackmarshal-provisioner</code> stores in <code>endpoint_status</code> (0011).
-        Colour never carries the meaning alone &mdash; the word is always present.
+        Color never carries the meaning alone &mdash; the word is always present.
       </p>
       <div class="pills" style="margin-top:var(--space-4)">
         <span class="pill pill-ok"><span class="dot" style="background:currentColor"></span>in_sync</span>
@@ -486,7 +487,7 @@
             <span class="d">data &middot; 400&ndash;500</span>
           </div>
           <div class="spec-mono">
-            spiffe://k7m2q9x4bt6vn8rc3wzhy5jd1f/service/rackmarshal-gateway<br>
+            spiffe://q3fz7k2m5x4c6r3t6y5b7n2w7a/service/rackmarshal-gateway<br>
             RACKMARSHAL_IDENTITY_AUDIT_ANCHOR_URI<br>
             sha256:9f2c4e7a &middot; generation 1188 &middot; notAfter 2026-09-23T04:37:00Z
           </div>
@@ -494,7 +495,7 @@
       </div>
 
       <h3 style="margin-top:var(--space-12)">Scale</h3>
-      <p style="color:var(--text-muted);margin-top:var(--space-2)">A 1.25 ratio from a 16px base.</p>
+      <p style="color:var(--text-muted);margin-top:var(--space-2)">A 1.25 ratio up from a 16px base. The two small steps, 14 and 12px, are fixed sizes off the ratio.</p>
       <div class="scale-list" style="margin-top:var(--space-6)">
         <div class="scale-item">
           <span class="scale-meta">4xl &middot; 48.8px</span>
@@ -566,7 +567,7 @@
       <h3 style="margin-top:var(--space-12)">Which to use</h3>
       <p style="color:var(--text-muted);margin-top:var(--space-2)">
         The lockup wherever Rackmarshal introduces itself and there is room for it to be read &mdash; a README,
-        a login page, a document cover, a slide. The symbol alone wherever it must be recognised rather
+        a login page, a document cover, a slide. The symbol alone wherever it must be recognized rather
         than read: favicons, avatars, a collapsed sidebar rail, an app icon. Minimum width for the lockup
         is 240&nbsp;px; below that the tagline stops being legible and the symbol should be used instead.
       </p>
@@ -588,7 +589,7 @@
             <img src="../../images/logo-mark.svg" alt="Mark at 32 pixels" style="width:32px;height:32px">
             <img src="../../images/logo-mark.svg" alt="Mark at 48 pixels" style="width:48px;height:48px">
           </div>
-          <span class="cap"><strong>Minimum size</strong><br>24&nbsp;px for the mark alone. Below that the sparks close up &mdash; use a single-colour silhouette instead</span>
+          <span class="cap"><strong>Minimum size</strong><br>24&nbsp;px for the mark alone. Below that the sparks close up &mdash; use a single-color silhouette instead</span>
         </div>
       </div>
 
@@ -602,7 +603,7 @@
         <div class="misuse m-recolor">
           <img src="../../images/logo-mark.svg" alt="">
           <span class="no">Never</span>
-          <span class="cap">Recolour the ramp</span>
+          <span class="cap">Recolor the ramp</span>
         </div>
         <div class="misuse m-shadow">
           <img src="../../images/logo-mark.svg" alt="">
@@ -711,7 +712,7 @@
         <div class="misuse m-recolor">
           <img src="../../images/rackmarshal-mark.svg" alt="" style="width:60px;height:auto">
           <span class="no">Never</span>
-          <span class="cap">Recolour outside the ramp</span>
+          <span class="cap">Recolor outside the ramp</span>
         </div>
         <div class="misuse">
           <div style="display:flex;align-items:center;gap:10px">
@@ -801,7 +802,7 @@
           Icon-only controls are allowed where space is tight &mdash; toolbars, a collapsed rail, a dense
           table's action column &mdash; each with an accessible name, a tooltip, and a
           44&nbsp;&times;&nbsp;44 hit area. But drift and tier always render their word, because icon
-          shape is no more readable than colour to someone who has not learned the set, and
+          shape is no more readable than color to someone who has not learned the set, and
           <em>Retire</em>, <em>Revoke</em> and <em>Delete</em> keep their labels at every width.
         </p>
       </div>
@@ -813,7 +814,7 @@
         <p class="eyebrow">08 &middot; Components</p>
         <h2>The tokens, applied</h2>
         <p>
-          Every control below reads from <code>tokens.css</code>. Nothing here hard-codes a colour, which is
+          Every control below reads from <code>tokens.css</code>. Nothing here hard-codes a color, which is
           why the theme toggle changes all of it at once.
         </p>
       </div>
@@ -847,7 +848,7 @@
 <footer>
   <div class="wrap">
     <p>
-      Draft &middot; Server Curio Rackmarshal. Colours are read from
+      Draft &middot; Server Curio Rackmarshal. Colors are read from
       <code>docs/images/logo.svg</code>; tokens live in <code>docs/design/brand/tokens.css</code>.
       Type is <a href="https://fonts.google.com/specimen/Archivo">Archivo</a> and
       <a href="https://fonts.google.com/specimen/IBM+Plex+Sans">IBM Plex Sans</a>, both SIL Open Font

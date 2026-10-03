@@ -5,7 +5,7 @@
  *
  * The brand ramp is lifted unchanged from docs/images/logo.svg: the mark is a
  * heat gradient — plum at the cool outer ring, crimson at the working heat,
- * warm sand for the sparks. Every UI colour below is derived from it.
+ * warm sand for the sparks. Every UI color below is derived from it.
  *
  * Contrast: every foreground/background pair defined here was measured against
  * WCAG 2.1 relative luminance. Text pairs meet AA (4.5:1); control borders and
@@ -26,7 +26,7 @@
   --sc-spark: #F7BB7A; /* the three spark dots */
   --sc-quench: #FAF7F5; /* warm off-white */
 
-  /* ---- Neutrals — biased toward plum, never pure grey ---- */
+  /* ---- Neutrals — biased toward plum, never pure gray ---- */
   --sc-neutral-00: #FFFFFF;
   --sc-neutral-05: #FAF7F5;
   --sc-neutral-10: #F2ECEA;
@@ -51,8 +51,8 @@
   --border-strong: var(--sc-neutral-40); /*  3.45:1 on bg — inputs, controls */
 
   /* ---- Action ---- *
-   * Plum carries primary actions, not ember. Crimson is both the brand colour
-   * and the conventional error colour; reserving ember for the mark and for
+   * Plum carries primary actions, not ember. Crimson is both the brand color
+   * and the conventional error color; reserving ember for the mark and for
    * critical state removes that collision instead of living with it. */
   --action: var(--sc-plum); /* 13.73:1 on bg  AAA */
   --action-hover: #3A0E1F;
@@ -82,7 +82,7 @@
   --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* Type scale, 1.25 ratio from a 16px base */
+  /* Type scale, 1.25 ratio up from a 16px base; xs (12px) and sm (14px) are fixed sizes off the ratio */
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;
@@ -120,8 +120,8 @@
     --text: #F2E9E6; /* 15.36:1 on surface AAA */
     --text-muted: #B39BA3; /*  7.11:1 on surface AAA */
 
-    --border: #37222A;
-    --border-strong: #7C5763; /*  3.16:1 on bg — inputs, controls */
+    --border: #37222A; /* 1.25:1 on surface — decorative rules only */
+    --border-strong: #8C6673; /*  3.73:1 on surface, 3.96:1 on bg — inputs, controls */
 
     --action: #D98A9B; /*  7.04:1 on surface AAA */
     --action-hover: #E9A3B2;
@@ -157,7 +157,7 @@
   --text-muted: #B39BA3;
 
   --border: #37222A;
-  --border-strong: #7C5763;
+  --border-strong: #8C6673;
 
   --action: #D98A9B;
   --action-hover: #E9A3B2;

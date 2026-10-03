@@ -335,7 +335,7 @@
         <span class="tier">production</span>
         <span class="muted">prod-east</span>
       </div>
-      <span class="muted mono" style="font-size:var(--text-xs)">k7m2q9x4bt6vn8rc3wzhy5jd1f</span>
+      <span class="muted mono" style="font-size:var(--text-xs)">q3fz7k2m5x4c6r3t6y5b7n2w7a</span>
       <div class="spacer"></div>
       <button class="icon-btn" id="theme-toggle" type="button" title="Switch theme" aria-label="Switch theme">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c-4.97 0-9-4.03-9-9Z"/></svg>
@@ -549,7 +549,7 @@
           <div class="panel-head"><h3>Authority</h3></div>
           <div class="panel-body">
             <dl class="kv">
-              <dt>Trust domain</dt><dd>k7m2q9x4bt6vn8rc3wzhy5jd1f</dd>
+              <dt>Trust domain</dt><dd>q3fz7k2m5x4c6r3t6y5b7n2w7a</dd>
               <dt>Root subject</dt><dd>CN=Rackmarshal Root CA, O=Northwind</dd>
               <dt>Root expiry</dt><dd>2027-11-02T00:00:00Z</dd>
               <dt>Key backend</dt><dd>pkcs11</dd>
@@ -922,7 +922,7 @@
       <div class="page-head">
         <div>
           <h1>Enrollment tokens</h1>
-          <p>Single-use credentials that enrol a host or a service into <strong>prod-east</strong>.</p>
+          <p>Single-use credentials that enroll a host or a service into <strong>prod-east</strong>.</p>
         </div>
         <div class="spacer"></div>
         <button class="btn btn-primary" type="button" data-stepup-form="enrollment">Issue token</button>
@@ -1241,7 +1241,7 @@
           { id: "tenant", label: "Tenant", type: "select", options: ["northwind", "eastbrook", "halcyon", "meridian"] },
           { id: "ttl", label: "Expires in", type: "select", options: ["15 minutes", "1 hour"] }
         ],
-        secret: function () { return "rm1.k7m2q9x4bt6vn8rc3wzhy5jd1f.9f2c4e7a.en-" + rid(6) + "." + rid(32); },
+        secret: function () { return "rm1.q3fz7k2m5x4c6r3t6y5b7n2w7a.9f2c4e7a.en-" + rid(6) + "." + rid(32); },
         target: "#cenroll-table tbody",
         row: function (v) {
           var svc = v.kind === "service";

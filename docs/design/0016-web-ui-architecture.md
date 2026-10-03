@@ -21,14 +21,14 @@
 
 ## Context & goals
 
-0001 enumerates fifteen repositories and none of them renders a page for a human, beyond the login site
-0007 gives `sso`. Everything an operator does today goes through `cli`
-([0010](0010-cli.md)), and 0007 makes operator administration pages an explicit non-goal for the
-SSO service. Two loose ends in the existing set point at this document: 0008 asks outright whether "a
-web console [will] need CORS on the operator ingress", and turns CORS and CSRF middleware off on the
-grounds that "no browser origin calls the gateway"; and 0010 weighs a loopback redirect with PKCE, which
-needs a browser on the same machine and fails over SSH, against the device authorization grant, which
-makes the operator carry a code to another browser.
+Before this document, 0001 enumerated fifteen repositories and none of them rendered a page for a human,
+beyond the login site 0007 gives `sso`. Everything an operator did went through `cli`
+([0010](0010-cli.md)), and 0007 makes operator administration pages an explicit non-goal for the SSO
+service. Two loose ends in the earlier set pointed at this document: 0008 asked, as an open question,
+whether a web console would need CORS on the operator ingress, and turned CORS and CSRF middleware off on
+the grounds that no browser origin calls the gateway; and 0010 weighed a loopback redirect with PKCE,
+which needs a browser on the same machine and fails over SSH, against the device authorization grant,
+which makes the operator carry a code to another browser.
 
 This document adds the surfaces, fixes the stack they share, and answers both questions.
 
@@ -72,13 +72,13 @@ enrollments.
 
 #### Rendering stack
 
-| Layer            | Choice                     | Version     | Why                                                        |
-|------------------|----------------------------|-------------|------------------------------------------------------------|
-| Templates        | templ                      | v0.3.1020   | Typed, compiled to Go; no runtime template parsing         |
-| Server interaction | htmx                     | 2.0.10      | HTML over the wire; no client-side API token               |
-| Local state      | Alpine.js (CSP build)      | 3.14.1      | Menus, tabs, disclosure; no build step of its own          |
-| Styling          | Tailwind CSS               | v4          | Matches the TailAdmin reference; standalone CLI, no Node   |
-| Reference theme  | TailAdmin community        | MIT         | Dashboard shell, tables, forms as a structural starting point |
+| Layer              | Choice                | Version   | Why                                                                |
+|--------------------|-----------------------|-----------|--------------------------------------------------------------------|
+| Templates          | templ                 | v0.3.1020 | Typed, compiled to Go; no runtime template parsing                 |
+| Server interaction | htmx                  | 2.0.10    | HTML over the wire; no client-side API token                       |
+| Local state        | Alpine.js (CSP build) | 3.14.1    | Menus, tabs, disclosure; no build step of its own                  |
+| Styling            | Tailwind CSS          | v4        | Matches the TailAdmin reference; standalone CLI, no Node           |
+| Reference theme    | TailAdmin community   | —         | MIT; dashboard shell, tables, forms as a structural starting point |
 
 templ compiles templates into Go functions, so a template that references a missing field fails at build
 time rather than in a handler. Generated `_templ.go` files are committed and CI fails on drift, matching
@@ -92,7 +92,18 @@ reference theme does not pull one in either.
 `Function` constructor, which cannot work under a content security policy without `'unsafe-eval'`. The
 CSP build restricts expressions to component-scoped methods and properties declared in `Alpine.data`,
 which costs some expressiveness in markup and buys a policy with no `unsafe-eval` on any surface. This is
-a hard requirement, not a preference: these are the pages that administer the deployment.
+a hard requirement, not a preference: these are the pages that administer the deployment. It also means
+TailAdmin is a structural reference, not drop-in markup: its components carry inline Alpine expressions
+(`x-data="{ open: false }"`, `@click="open = !open"`), which the CSP build does not evaluate, so each one
+is rewritten as an `Alpine.data` component with named properties and methods, not just restyled.
+
+**htmx runs without eval.** `selfRequestsOnly: true` is already the htmx 2 default. Two other settings
+change, in the `htmx-config` meta tag rather than an inline script: `allowEval: false`, so htmx never
+calls `eval` or `Function`, and `includeIndicatorStyles: false`, so it never injects the inline `<style>`
+element its request indicators otherwise need; the `.htmx-indicator` rules live in the compiled
+stylesheet instead. With eval off, the features that depend on it are not used: no `hx-on` attributes, no
+`js:` or `javascript:` values in `hx-vals`, and no `[…]` event filters in `hx-trigger`. Behavior they
+would have expressed goes in a first-party script served from `'self'`.
 
 **Nothing loads from a CDN.** htmx, Alpine, the compiled stylesheet, and the fonts are served by the
 application from its own origin, fingerprinted and cached. 0012 already contemplates air-gapped
@@ -111,9 +122,9 @@ browser ──TLS──► portal ──TLS + Bearer──► gateway ──► 
 The browser talks only to the portal or console origin. That process holds the user's tokens, calls the
 gateway through `sdk` exactly as `cli` does, and returns HTML. Three things follow:
 
-- **0008's CORS question resolves to "no".** No browser origin calls the gateway, so CORS and CSRF
-  middleware stay off there and 0008's Open question can be struck. The portals are ordinary `operator`
-  audience clients of the gateway.
+- **0008's CORS question resolved to "no".** No browser origin calls the gateway, so CORS and CSRF
+  middleware stay off there, and 0008 has since struck the open question. The portals are ordinary
+  `operator` audience clients of the gateway.
 - **No token storage problem in the browser.** There is no access token in `localStorage`, no refresh
   token in JavaScript reach, and no silent-renewal iframe.
 - **`sdk` stays the only client.** The portals add no second way to call Rackmarshal, so the
@@ -228,13 +239,14 @@ process's own.
 
 - **CSP** — `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:;
   font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`.
-  No `unsafe-inline` and no `unsafe-eval`, which the Alpine CSP build and self-hosted assets make
-  achievable. Inline styles in templates are forbidden by lint rather than by policy exception.
+  No `unsafe-inline` and no `unsafe-eval`, which the Alpine CSP build, htmx's eval-free configuration,
+  and self-hosted assets make achievable. Inline styles in templates are forbidden by lint rather than
+  by policy exception.
 - **CSRF** — `http.CrossOriginProtection` rejects cross-origin unsafe requests using `Sec-Fetch-Site` and
   `Origin`. Every unsafe method also carries a synchronizer token stored in the server-side session, sent
-  by htmx through `hx-headers` on the body element and by a hidden field in non-JS forms. htmx is
-  configured with `selfRequestsOnly: true` so an injected attribute cannot direct a request to another
-  origin.
+  by htmx through `hx-headers` on the body element and by a hidden field in non-JS forms. htmx keeps
+  `selfRequestsOnly: true`, already its htmx 2 default, so an injected attribute cannot direct a request
+  to another origin; `allowEval` and `includeIndicatorStyles` are off, as set out above.
 - **Response headers** — the starter's hardened set from 0007: HSTS, `nosniff`, `frame-ancestors 'none'`,
   `Referrer-Policy: same-origin`, and `Cache-Control: no-store` on every authenticated response.
 - **Tenancy** — the portal derives the tenant from the session principal and never from a path or query
@@ -265,8 +277,8 @@ environment a destructive control belongs to.
 
 - Every authenticated page renders the environment name and tier in the masthead, using the tier ramp in
   0019, and the `<title>` carries it too so that a browser tab shows it.
-- `Hardened()` tiers shorten the idle session to 30 minutes and disable any development affordance. The
-  step-up above applies in every tier, because `identity` enforces it.
+- `Hardened()` tiers refuse a `session.idleTimeout` longer than its 30-minute default and disable any
+  development affordance. The step-up above applies in every tier, because `identity` enforces it.
 - A session whose recorded environment ID no longer matches the process's own is destroyed rather than
   migrated, which is the browser-side counterpart to the mismatch rules 0012 and 0013 apply to agents
   and plugins.
@@ -346,7 +358,7 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
 
 - **Shared components** — the portal and console will duplicate a dashboard shell, a table, and a form
   set. Extract them into a `web-kit` library once the duplication is real, or accept it for two
-  consumers? Extraction adds a sixteenth repository.
+  consumers? 0001 lists seventeen repositories, so extraction would add an eighteenth.
 - **OIDC relying-party library** — `coreos/go-oidc` and its `go-jose` graph, or a hand-written exchange
   over `sdk`'s HTTP client with a small JWKS cache?
 - **Session store ownership** — PostgreSQL reuses existing conventions, but it gives the portal and
@@ -362,7 +374,8 @@ Prefixes are `RACKMARSHAL_PORTAL` and `RACKMARSHAL_CONSOLE`, per the CONVENTIONS
 ## References
 
 - [templ](https://templ.guide) — typed HTML templating for Go; v0.3.1020.
-- [htmx](https://htmx.org/docs/) — 2.0.10 is the current major line.
+- [htmx](https://htmx.org/docs/) — pinned 2.0.10 (2.x line); `allowEval`, `includeIndicatorStyles`,
+  and `selfRequestsOnly` are described in the [configuration reference](https://htmx.org/reference/#config).
 - [Alpine.js](https://alpinejs.dev/essentials/installation) — 3.14.1; the CSP build is documented at
   [alpinejs.dev/advanced/csp](https://alpinejs.dev/advanced/csp).
 - [TailAdmin community edition](https://github.com/TailAdmin/tailadmin-free-tailwind-dashboard-template)

@@ -68,6 +68,9 @@ that proves the full request loop ([Sequencing](0001-project-repositories.md#seq
 
 - **Declared versus reported.** Labels and attributes change only through operator calls. Facts change
   only through reports. Neither overwrites the other: a reported hostname never renames an endpoint.
+  Each side carries its own version: `resourceVersion` covers declared data only, and `factsVersion`
+  covers facts. The endpoint's `ETag` and the `If-Match` on `PATCH` use `resourceVersion`, so a facts
+  report arriving every few minutes never makes an operator's update fail with `412`.
 - **Classes.** Built-in classes ship as embedded YAML and cannot be changed. Tenants may add classes with
   names that do not collide with built-ins. A class's `attributeSchema` and optional `factSchema` are
   JSON Schema 2020-12. These are tenant-supplied at runtime and unrelated to the Go types in 0002, which
@@ -91,6 +94,7 @@ that proves the full request loop ([Sequencing](0001-project-repositories.md#seq
   "lifecycle": "active",
   "factsReportedAt": "2026-09-15T10:04:05Z",
   "resourceVersion": "42",
+  "factsVersion": "317",
   "createdAt": "2026-09-01T08:00:00Z",
   "updatedAt": "2026-09-15T10:04:05Z"
 }
@@ -108,18 +112,18 @@ and [0008](0008-gateway.md), never from the path.
 |--------------------------------------------------|----------------------|-------------------------------------------|
 | `GET /endpoints`                                 | operator, internal   | `labelSelector`, `class`, `lifecycle`     |
 | `POST /endpoints`                                | operator             | declare an endpoint                       |
-| `GET /endpoints/{endpointId}`                    | operator, internal   | `ETag` = `resourceVersion`                |
+| `GET /endpoints/{endpointId}`                    | operator, internal   | `ETag` = `resourceVersion` (declared)     |
 | `PATCH /endpoints/{endpointId}`                  | operator             | JSON Merge Patch; `If-Match` required     |
 | `DELETE /endpoints/{endpointId}`                 | operator             | sets `retired`; purged after retention    |
 | `GET /retention` / `PUT /retention`              | operator             | the calling tenant's retention policy     |
-| `GET /endpoints/{endpointId}/facts`              | operator, internal   | current facts                             |
-| `PUT /endpoints/{endpointId}/facts`              | internal             | agentless facts from `provisioner`  |
+| `GET /endpoints/{endpointId}/facts`              | operator, internal   | current facts; `ETag` = `factsVersion`    |
+| `PUT /endpoints/{endpointId}/facts`              | internal             | agentless facts from `provisioner`        |
 | `GET /endpoints/{endpointId}/revisions`          | operator             | `kind=declared` or `kind=facts`           |
 | `GET`, `POST /endpoint-classes`                  | operator             | built-ins are listed but read-only        |
 | `GET`, `PUT`, `DELETE /endpoint-classes/{name}`  | operator             | `PUT` for tenant classes only             |
 | `GET /relationships`, `POST /relationships`      | operator, internal   | filter by `endpointId`, `type`            |
 | `DELETE /relationships/{relationshipId}`         | operator             |                                           |
-| `POST /agent-reports`                            | agent                | `x-rackmarshal-idempotent: true`                |
+| `POST /agent-reports`                            | agent                | `x-rackmarshal-idempotent: true`          |
 | `GET /endpoint-events`                           | internal             | `cursor`, `limit`, `waitSeconds` ≤ 30     |
 
 ```yaml
@@ -128,7 +132,7 @@ and [0008](0008-gateway.md), never from the path.
       operationId: createAgentReport
       x-rackmarshal-audience: [agent]
       x-rackmarshal-idempotent: true
-      security: [{ mutualTLS: [] }]
+      security: []          # mutual TLS, enforced from x-rackmarshal-audience
       requestBody:
         required: true
         content:
@@ -143,6 +147,13 @@ and [0008](0008-gateway.md), never from the path.
         default:
           $ref: "../../common/v1/components.yaml#/components/responses/Problem"
 ```
+
+The documents are OpenAPI 3.0, which has no mutual-TLS security scheme, so `agent` and `internal`
+operations declare `security: []` and the gateway and services enforce mutual TLS from
+`x-rackmarshal-audience`. Operator operations list `bearerAuth` and name their roles in
+`x-rackmarshal-roles`. An operation with several audiences, such as `GET /endpoints`, lists
+`bearerAuth` because `operator` is one of them, and each caller is held to its own audience's
+credential: a bearer token from operators, mutual TLS from `provisioner` ([0002](0002-api-schema.md)).
 
 Lists use `limit` and `cursor`, with keyset pagination on `(id)` inside the tenant. Updates use
 `application/merge-patch+json` ([RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)) with `If-Match`
@@ -159,7 +170,9 @@ agent ──mTLS 1.3──► gateway (agent ingress)
 
 1. **Request** — the agent sends `{ reportId, sequence, collectedAt, previousDigest?, facts? }`. It
    never sends an agent or endpoint ID; identity comes only from the principal header, which is accepted
-   only from the gateway's SPIFFE ID.
+   only from the gateway's SPIFFE ID. `sequence` is the agent's monotonic report counter: the agent
+   persists it across restarts and resets it only on re-enrollment, and inventory resets
+   `last_report_sequence` when an endpoint is bound to a new agent ID.
 2. **Binding** — inventory finds the endpoint bound to the agent ID. On first contact it auto-registers
    one: the class comes from the reported OS family through `autoRegistration.classByOsFamily`, the name
    from the reported hostname (a numeric suffix resolves collisions), and the labels from the enrollment
@@ -170,9 +183,11 @@ agent ──mTLS 1.3──► gateway (agent ingress)
 4. **Validation** — core facts are checked against the `AgentReport` schema from `api-schema`, and
    `facts.plugins.<name>` against the class's `factSchema` where one is defined. Limits: 8 MiB
    decompressed per report, 256 KiB per plugin, nesting depth 32.
-5. **Write** — one transaction: lock the endpoint row, ignore a `sequence` that is not newer (a replayed
-   `reportId` returns the original receipt), store the facts, add a facts revision if the digest changed,
-   and add an event.
+5. **Write** — one transaction: if `reportId` has a stored receipt, return that receipt unchanged;
+   otherwise lock the endpoint row, ignore a `sequence` that is not newer, store the facts and bump
+   `factsVersion`, add a facts revision if the digest changed, store the receipt under `reportId`, and
+   add an event last. Receipts are kept for `reports.receiptRetention` (default 24 hours), so any replay
+   within that window — not only of the latest report — gets its original receipt.
 6. **Receipt** — `202 { endpointId, factsDigest, nextReportAfter }`. The server sets the report cadence
    (default 5 minutes, with jitter), which spreads load across the fleet.
 
@@ -185,8 +200,16 @@ agent ──mTLS 1.3──► gateway (agent ingress)
   and row-level security limits `endpoint_events` to that tenant's rows. It follows the tenants that hold
   desired-state documents, since a tenant with none has nothing to reconcile. Events are
   `endpoint.created`, `endpoint.declared-updated`, `endpoint.facts-updated`, `endpoint.retired`, and
-  `class.updated`, each carrying `endpointId` and `resourceVersion`, not full documents. PostgreSQL
-  `LISTEN`/`NOTIFY` wakes long-polls; the table is authoritative.
+  `class.updated`, each carrying `endpointId` and the `resourceVersion` or `factsVersion` it produced,
+  not full documents. PostgreSQL `LISTEN`/`NOTIFY` wakes long-polls; the table is authoritative.
+- **Cursor order** — a `bigserial` is drawn when a row is inserted, not when it commits, so two
+  concurrent appends could commit out of order and a cursor that has passed the later number would skip
+  the earlier one. Appends to `endpoint_events` are therefore serialized per tenant: the inserting
+  transaction first takes `pg_advisory_xact_lock(hashtext('rackmarshal.endpoint_events'),
+  hashtext(tenant_id))`, as [CONVENTIONS](CONVENTIONS.md#running-multiple-replicas) does for serial
+  chains, and draws `sequence` after it. Within a tenant, `sequence` order then equals commit order, and
+  the cursor never skips. A rolled-back append leaves a harmless gap. The insert is the last statement
+  of its transaction, so the lock is held only until commit.
 - **Writes** — for agentless devices only, it `PUT`s facts it discovered through device APIs, with its
   own principal as the revision actor.
 - **Authority** — inventory stores no desired state and makes no reconciliation decisions.
@@ -203,7 +226,7 @@ agent ──mTLS 1.3──► gateway (agent ingress)
 - **Removed** — swaggo and `cmd/openapi-gen` (per 0002). **Proposed: drop `uptrace/bun`** and use
   `pgxpool` with hand-written SQL. Bun and `pgdialect` link 7 modules (`bun`, `pgdialect`,
   `jinzhu/inflection`, `puzpuzpuz/xsync/v3`, `tmthrgd/go-hex`, `vmihailenco/msgpack/v5`,
-  `vmihailenco/tagparser/v2`), and the queries here (JSONB containment, `FOR UPDATE`, `SET LOCAL`) are
+  `vmihailenco/tagparser/v2`), and the queries here (JSONB containment, `FOR UPDATE`, `set_config`) are
   plain SQL anyway. Goose keeps running through `pgx/v5/stdlib`.
 - **Measured footprint** — with bun, the proposed set plus `common`'s OpenTelemetry stack links 40
   third-party modules (123 in `go list -m all`). Without bun, subtracting its 7 gives about 33, not
@@ -236,8 +259,9 @@ CREATE TABLE endpoints (
   agent_id text UNIQUE,                   -- agent IDs are unique within the environment
   lifecycle text NOT NULL DEFAULT 'registered',
   facts jsonb NOT NULL DEFAULT '{}', facts_digest bytea, facts_reported_at timestamptz,
-  last_report_id text, last_report_sequence bigint NOT NULL DEFAULT 0,
-  resource_version bigint NOT NULL DEFAULT 1,
+  last_report_sequence bigint NOT NULL DEFAULT 0,
+  resource_version bigint NOT NULL DEFAULT 1,   -- declared data only; the ETag
+  facts_version bigint NOT NULL DEFAULT 0,      -- bumped by reports and agentless fact writes
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   retired_at timestamptz,
   PRIMARY KEY (tenant_id, id),
@@ -248,7 +272,8 @@ CREATE INDEX endpoints_labels ON endpoints USING gin (labels);   -- jsonb_ops: @
 
 CREATE TABLE endpoint_revisions (
   tenant_id text NOT NULL, endpoint_id text NOT NULL,
-  kind text NOT NULL CHECK (kind IN ('declared', 'facts')), revision bigint NOT NULL, actor text NOT NULL, recorded_at timestamptz NOT NULL DEFAULT now(),
+  kind text NOT NULL CHECK (kind IN ('declared', 'facts')), revision bigint NOT NULL,
+  actor text NOT NULL, recorded_at timestamptz NOT NULL DEFAULT now(),
   document jsonb NOT NULL,
   PRIMARY KEY (tenant_id, endpoint_id, kind, revision),
   FOREIGN KEY (tenant_id, endpoint_id) REFERENCES endpoints (tenant_id, id)
@@ -264,19 +289,27 @@ CREATE TABLE endpoint_relationships (
 
 CREATE TABLE endpoint_events (
   sequence bigserial PRIMARY KEY, tenant_id text NOT NULL, endpoint_id text,
-  type text NOT NULL, resource_version bigint, occurred_at timestamptz NOT NULL DEFAULT now()
+  type text NOT NULL, resource_version bigint, facts_version bigint,
+  occurred_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX endpoint_events_tenant ON endpoint_events (tenant_id, sequence);
+
+CREATE TABLE agent_report_receipts (
+  tenant_id text NOT NULL, report_id text NOT NULL, endpoint_id text NOT NULL,
+  receipt jsonb NOT NULL, received_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, report_id)
+);
 
 ALTER TABLE endpoints ENABLE ROW LEVEL SECURITY;
 ALTER TABLE endpoints FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON endpoints
   USING (tenant_id = current_setting('rackmarshal.tenant_id', true));
--- same ENABLE/FORCE/POLICY for revisions, relationships, events, and tenant_retention (below);
+-- same ENABLE/FORCE/POLICY for revisions, relationships, events, receipts, and tenant_retention (below);
 -- classes also allow tenant_id IS NULL on read. No table is exempt.
 
 -- +goose Down
-DROP TABLE endpoint_events, endpoint_relationships, endpoint_revisions, endpoints, endpoint_classes;
+DROP TABLE agent_report_receipts, endpoint_events, endpoint_relationships, endpoint_revisions, endpoints,
+  endpoint_classes;
 ```
 
 - **Label selectors** compile to `labels @> '{"site":"dc1"}'` for equality and `in`, and `labels ? 'k'` for
@@ -317,27 +350,32 @@ DROP TABLE endpoint_events, endpoint_relationships, endpoint_revisions, endpoint
   ```
 
   A `NULL` column inherits the environment default (`history.factsRetention` and its siblings), so a
-  tenant that never sets a policy behaves exactly as it does today, and the defaults stay the 90 / 400 /
-  7 / 30-day values. Writes are clamped to `[retention.minimum, retention.maximum]` from environment
-  configuration, because retention is both a cost and a compliance control the operator owns: with no
-  floor a tenant could shorten its own history ahead of an audit, and with no ceiling one tenant could
-  grow the environment's storage without bound. A change is an audited event carrying the old and new
-  values.
+  tenant that never sets a policy behaves as the environment defaults specify: 90 / 400 / 7 / 30 days
+  unless the operator changes them. Writes are clamped to `[retention.minimum, retention.maximum]` from
+  environment configuration, because retention is both a cost and a compliance control the operator owns:
+  with no floor a tenant could shorten its own history ahead of an audit, and with no ceiling one tenant
+  could grow the environment's storage without bound. A change is an audited event carrying the old and
+  new values.
 
-  Each tick, the sweep takes `pg_try_advisory_lock` and skips when another replica holds it
-  ([CONVENTIONS](CONVENTIONS.md#running-multiple-replicas)); deletes stay batched. Partitioning waits
-  until volume requires it.
+  Each tenant's sweep runs in its own transaction, which takes
+  `pg_try_advisory_xact_lock(hashtext('rackmarshal.retention'), hashtext(tenant_id))` and skips that
+  tenant when another replica holds it ([CONVENTIONS](CONVENTIONS.md#running-multiple-replicas)). A
+  transaction-level lock is released at commit, so it cannot outlive the work on a pooled connection;
+  two replicas may sweep different tenants at once, which is harmless. Deletes stay batched, and the
+  same sweep drops report receipts older than `reports.receiptRetention`. Partitioning waits until
+  volume requires it.
 - **Declared revisions** store full snapshots of labels and attributes (small). Facts revisions are stored
   only when the digest changes.
 
 #### Scaling
 
 N replicas, nothing elected. Every request is a PostgreSQL transaction and the service caches nothing
-between requests, so reads and writes need no coordination: concurrent writes to one endpoint are
-already settled by `resource_version` optimistic concurrency, which does not care how many processes
-compete. The retention sweep is the only scheduled work, and it is claimed as described above. Agent
-report ingestion (`reports.interval`, default 5m) is agent-driven rather than scheduled here, so it
-distributes across replicas by whichever one the gateway routes to.
+between requests, so reads and writes need no coordination: concurrent operator writes to one endpoint
+are already settled by `resource_version` optimistic concurrency, and reports serialize on the endpoint
+row lock and touch only `facts_version`, neither of which cares how many processes compete. The retention
+sweep is the only scheduled work, and it is claimed as described above. Agent report ingestion
+(`reports.interval`, default 5m) is agent-driven rather than scheduled here, so it distributes across
+replicas by whichever one the gateway routes to.
 
 ### Security
 
@@ -349,7 +387,8 @@ distributes across replicas by whichever one the gateway routes to.
   is the retention sweep's tenant-ID function (Data & storage).
 - **Principal trust.** `X-Rackmarshal-Principal` is accepted only from
   `spiffe://<environment-id>/service/gateway`, and `X-Rackmarshal-Tenant-Id` only from `internalCallers`
-  (default `provisioner`). Agents can act only on their own endpoint.
+  (default `provisioner`). Each entry is a service name, expanded to
+  `spiffe://<environment-id>/service/<name>`. Agents can act only on their own endpoint.
 - **Schema safety.** Tenant-supplied JSON Schemas compile with remote `$ref` loading disabled, and are
   capped at 64 KiB and depth 32. Whether jsonschema v6's default loader fetches over the network is
   unverified; the service installs an explicit loader with no network access regardless.
@@ -382,20 +421,27 @@ distributes across replicas by whichever one the gateway routes to.
 
 Prefix `RACKMARSHAL_INVENTORY_`. Starter server, logging, environment, and telemetry keys are omitted.
 
-| YAML                                | Variable                                         | Default               |
-|-------------------------------------|--------------------------------------------------|-----------------------|
-| `database.dsnFile`                  | `RACKMARSHAL_INVENTORY_DATABASE_DSN_FILE`              | required              |
-| `database.migrationDsnFile`         | `RACKMARSHAL_INVENTORY_DATABASE_MIGRATION_DSN_FILE`    | required to migrate   |
-| `database.autoMigrate`              | `RACKMARSHAL_INVENTORY_DATABASE_AUTO_MIGRATE`          | by tier               |
-| `reports.maxBytes`                  | `RACKMARSHAL_INVENTORY_REPORTS_MAX_BYTES`              | `8MiB`                |
-| `reports.interval`                  | `RACKMARSHAL_INVENTORY_REPORTS_INTERVAL`               | `5m`                  |
-| `autoRegistration.enabled`          | `RACKMARSHAL_INVENTORY_AUTO_REGISTRATION_ENABLED`      | `true`                |
-| `history.factsRetention`            | `RACKMARSHAL_INVENTORY_HISTORY_FACTS_RETENTION`        | `2160h`               |
-| `retention.minimum` / `.maximum`    | `RACKMARSHAL_INVENTORY_RETENTION_MINIMUM` / `_MAXIMUM` | `168h` / `26280h`     |
-| `retention.sweepInterval`           | `RACKMARSHAL_INVENTORY_RETENTION_SWEEP_INTERVAL`       | `1h`                  |
-| `history.declaredRetention`         | `RACKMARSHAL_INVENTORY_HISTORY_DECLARED_RETENTION`     | `9600h`               |
-| `events.retention`                  | `RACKMARSHAL_INVENTORY_EVENTS_RETENTION`               | `168h`                |
-| `internalCallers`                   | `RACKMARSHAL_INVENTORY_INTERNAL_CALLERS`               | `provisioner`   |
+| YAML                               | Variable                                                     | Default             |
+|------------------------------------|--------------------------------------------------------------|---------------------|
+| `database.dsnFile`                 | `RACKMARSHAL_INVENTORY_DATABASE_DSN_FILE`                    | required            |
+| `database.migrationDsnFile`        | `RACKMARSHAL_INVENTORY_DATABASE_MIGRATION_DSN_FILE`          | required to migrate |
+| `database.autoMigrate`             | `RACKMARSHAL_INVENTORY_DATABASE_AUTO_MIGRATE`                | by tier             |
+| `reports.maxBytes`                 | `RACKMARSHAL_INVENTORY_REPORTS_MAX_BYTES`                    | `8MiB`              |
+| `reports.interval`                 | `RACKMARSHAL_INVENTORY_REPORTS_INTERVAL`                     | `5m`                |
+| `reports.receiptRetention`         | `RACKMARSHAL_INVENTORY_REPORTS_RECEIPT_RETENTION`            | `24h`               |
+| `autoRegistration.enabled`         | `RACKMARSHAL_INVENTORY_AUTO_REGISTRATION_ENABLED`            | `true`              |
+| `autoRegistration.classByOsFamily` | `RACKMARSHAL_INVENTORY_AUTO_REGISTRATION_CLASS_BY_OS_FAMILY` | see below           |
+| `history.factsRetention`           | `RACKMARSHAL_INVENTORY_HISTORY_FACTS_RETENTION`              | `2160h`             |
+| `history.declaredRetention`        | `RACKMARSHAL_INVENTORY_HISTORY_DECLARED_RETENTION`           | `9600h`             |
+| `history.retiredEndpointRetention` | `RACKMARSHAL_INVENTORY_HISTORY_RETIRED_ENDPOINT_RETENTION`   | `720h`              |
+| `events.retention`                 | `RACKMARSHAL_INVENTORY_EVENTS_RETENTION`                     | `168h`              |
+| `retention.minimum` / `.maximum`   | `RACKMARSHAL_INVENTORY_RETENTION_MINIMUM` / `_MAXIMUM`       | `168h` / `26280h`   |
+| `retention.sweepInterval`          | `RACKMARSHAL_INVENTORY_RETENTION_SWEEP_INTERVAL`             | `1h`                |
+| `internalCallers`                  | `RACKMARSHAL_INVENTORY_INTERNAL_CALLERS`                     | `provisioner`       |
+
+`autoRegistration.classByOsFamily` maps a reported OS family to the class an auto-registered endpoint
+gets; the default maps `linux` to `linux-server` and `windows` to `windows-server`. `internalCallers`
+lists service names, each expanded to `spiffe://<environment-id>/service/<name>`.
 
 The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces the starter's inline
 `database.dsn`.
@@ -416,8 +462,11 @@ The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces 
 - **Isolation tests** — for every repository method, tenant B cannot read or change tenant A's rows, even
   through a query deliberately missing `WHERE tenant_id`; this covers `endpoint_events` and
   `tenant_retention`, and `GET /endpoint-events` for one tenant never returns another's events.
-- **Ingestion** — replayed `reportId`, out-of-order `sequence`, unchanged digest, oversized plugin data,
+- **Ingestion** — a `reportId` replayed after later reports, out-of-order `sequence`, a facts report
+  between an operator's `GET` and `PATCH` (no `412`), unchanged digest, oversized plugin data,
   auto-registration name collisions, and a principal header from a non-gateway peer.
+- **Event cursor** — concurrent appends for one tenant, committed in the opposite order to their start,
+  are read back in commit order and none is skipped.
 - **Selectors** — a parser fuzz test plus table tests comparing SQL results with an in-memory evaluator.
 - **Contract** — responses validated against the embedded OpenAPI document (0002's conformance approach).
 

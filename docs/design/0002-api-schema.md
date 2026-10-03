@@ -10,8 +10,9 @@
 - **Summary:** `api-schema` holds the Go types every other repository shares: the service API
   models, the OPA policy inputs, outputs and state, and the desired-state manifests. Those types are the
   contract. The OpenAPI 3.0 documents and the reference documentation are generated from them and never
-  written by hand, and `sdk` generates its client from the types directly rather than from a
-  document. The manifest kinds themselves are specified in [0020](0020-desired-state-kinds.md).
+  written by hand; which generator emits them, and whether `sdk` builds its client from the types or from
+  the generated documents, are still open. The manifest kinds themselves are specified in
+  [0020](0020-desired-state-kinds.md).
 
 > An initial draft with concrete proposals, bounded by the
 > [Resolved decisions](0001-project-repositories.md#resolved-decisions) in 0001. Conventions other
@@ -19,9 +20,9 @@
 
 ## Context & goals
 
-[0001](0001-project-repositories.md#repository-inventory) makes `api-schema` the home of "the
-inter-service and client schema" and requires the wire contract to live there once, with clients using
-`sdk` rather than re-deriving types
+[0001](0001-project-repositories.md#repository-inventory) makes `api-schema` the home of "Go types for
+service APIs, OPA inputs/outputs/state, and desired-state manifests" and requires the wire contract to live
+there once, with clients using `sdk` rather than re-deriving types
 ([Naming & conventions](0001-project-repositories.md#naming--conventions)). It is first in the
 [build order](0001-project-repositories.md#sequencing--phases), so its choices constrain every other
 repository.
@@ -33,12 +34,12 @@ here. The repository holds Go types, and everything else is generated from them.
 The reason is the failure the old arrangement had already produced. A kind was described in three places —
 a hand-written schema, a hand-written Go type, and prose — with nothing forcing agreement, and the portal's
 directive wizard ended up generating YAML inferred from a single example ([0017](0017-portal.md)).
-One artefact has to win, and the one that compiles is the only one that cannot quietly disagree with itself.
+One artifact has to win, and the one that compiles is the only one that cannot quietly disagree with itself.
 
 **Goals**
 
 - One module holding every shared Go type: service API models, OPA structures, desired-state manifests.
-- Types that compile are the contract, so no second hand-written artefact can contradict them.
+- Types that compile are the contract, so no second hand-written artifact can contradict them.
 - Documents and reference material generated from the types and drift-checked in CI.
 - One dependency for every consumer: the SDK, the services, the gateway, the provisioner, and the agent.
 
@@ -69,7 +70,7 @@ One artefact has to win, and the one that compiles is the only one that cannot q
 
 Proposed: **the Go types are the contract, and documents are build outputs.** Rationale:
 
-- **One artefact wins, and it is the one that compiles.** A hand-written schema and a hand-written type
+- **One artifact wins, and it is the one that compiles.** A hand-written schema and a hand-written type
   can disagree; a generated schema cannot disagree with the type it came from.
 - **The starters already work this way.** `go-echo-starter` generates OpenAPI from route metadata and
   drift-checks it in CI (`800-call-openapi-drift.yaml`). Under contract-first that was an obstacle to work
@@ -132,38 +133,58 @@ The phases are 0011's: `admission` when a document is written, `dispatch` when a
 ([0012](0012-agent.md)), so its `Decision` is merged as a union of violations rather than
 replacing an earlier one.
 
-`Violation.code` is the same stable identifier the problem responses use, so a policy denial surfaces to a
-caller as `policy_denied` with the rule that denied it rather than as a generic failure.
+A policy denial surfaces to a caller as a problem whose `code` is `policy_denied`, with one `errors[]` entry
+per violation carrying that violation's `code`, `pointer`, and `detail`, so the caller sees the rule that
+denied it rather than a generic failure. `Violation.code` uses the same stable lower_snake_case form as
+problem codes.
 
 ### Paths, operations, and extensions
 
 Paths follow `/<service>/<version>/<plural-resource>[/{id}]` in kebab-case, and `operationId` is a
-lowerCamelCase verb-noun unique within its document. Three Rackmarshal extensions carry metadata other
+lowerCamelCase verb-noun unique within its document. Four Rackmarshal extensions carry metadata other
 repositories act on, and because documents are generated they originate as annotations on the route
 declarations rather than as YAML:
 
-| Extension                  | Applies to      | Values                                   | Used by                         |
-|----------------------------|-----------------|------------------------------------------|---------------------------------|
-| `x-rackmarshal-audience`   | operation       | array of `operator`, `agent`, `internal` | gateway routing, SDK docs, lint |
-| `x-rackmarshal-sensitive`  | schema property | `true`                                   | SDK redaction, logging rules    |
-| `x-rackmarshal-idempotent` | POST operation  | `true`                                   | SDK retry policy                |
+| Extension                  | Applies to           | Values                                   | Used by                         |
+|----------------------------|----------------------|------------------------------------------|---------------------------------|
+| `x-rackmarshal-audience`   | operation            | array of `operator`, `agent`, `internal` | gateway routing, SDK docs, lint |
+| `x-rackmarshal-roles`      | `operator` operation | array of role names, any one sufficing   | gateway coarse authorization    |
+| `x-rackmarshal-sensitive`  | schema property      | `true`                                   | SDK redaction, logging rules    |
+| `x-rackmarshal-idempotent` | POST operation       | `true`                                   | SDK retry policy                |
 
 `x-rackmarshal-sensitive` is a struct tag on the field it marks, so the property and its marking cannot
-drift apart. The other two are route annotations.
+drift apart. The other three are route annotations.
 
-`common/v1` defines two security schemes: `bearerAuth` (`type: http`, `scheme: bearer`) and `mutualTLS`.
-`operator` operations require `bearerAuth`; `agent` and `internal` operations require `mutualTLS`. The
-exceptions are agent enrollment, which 0001 makes the single route without a client certificate
-([Agent enrollment](0001-project-repositories.md#agent-enrollment)), and service enrollment; both declare
-`security: []`. The gateway-to-service hop is always mutual TLS and is not modeled per operation.
+The documents stay OpenAPI 3.0, which has no `mutualTLS` security scheme (added in 3.1) and requires the
+array in a security requirement to be empty for a non-OAuth scheme, so neither a client-certificate
+requirement nor role names can be expressed in `security`
+([Security Requirement Object](https://spec.openapis.org/oas/v3.0.3.html#security-requirement-object)).
+`common/v1` therefore defines one security scheme, `bearerAuth` (`type: http`, `scheme: bearer`), and the
+rest is carried by the extensions:
+
+- **`operator` operations** list `bearerAuth` in `security` and name their roles in `x-rackmarshal-roles`.
+- **`agent` and `internal` operations** declare `security: []` and rely on `x-rackmarshal-audience`, which
+  the gateway (agent ingress) and the services (internal listeners) enforce as mutual TLS on SPIFFE IDs.
+- **Several audiences** — an operation lists `bearerAuth` in `security` when `operator` is one of its
+  audiences, and declares `security: []` otherwise. Each caller is held to its own audience's credential:
+  a bearer token and roles on the operator ingress, an agent certificate on the agent ingress, and a
+  service certificate on a direct internal call. `security` therefore describes only the operator path.
+
+Agent enrollment, which 0001 makes the single route without a client certificate
+([Agent enrollment](0001-project-repositories.md#agent-enrollment)), and service enrollment are the
+exceptions to the mutual-TLS rule: they authenticate with the token in the request body
+([0006](0006-identity.md)). Because `security: []` no longer singles them out, they are named by
+`operationId` in an allowlist this repository publishes, which lint and the gateway share
+([0008](0008-gateway.md)). The gateway-to-service hop is always mutual TLS and is not modeled per
+operation.
 
 ### Errors
 
 Every non-2xx response is `application/problem+json`
 ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) with Rackmarshal members `code`, `traceId`, and, for
-validation failures, `errors[]` of `pointer` and `detail`. `Problem` is a Go type in `pkg/api/common/v1`,
-so every service returns the same shape by construction. Problem bodies never carry secrets, stack traces,
-or another tenant's data.
+validation failures, `errors[]` of `pointer`, `detail`, and an optional `code` (a violation's code under
+`policy_denied`). `Problem` is a Go type in `pkg/api/common/v1`, so every service returns the same shape by
+construction. Problem bodies never carry secrets, stack traces, or another tenant's data.
 
 ### Versioning and deprecation
 
@@ -173,6 +194,10 @@ the desired-state stages 0001 sets. `oasdiff` compares each generated document w
 fails on a breaking change to a beta or stable version. Deprecation uses `deprecated: true` in the generated
 document plus `Deprecation` ([RFC 9745](https://www.rfc-editor.org/rfc/rfc9745)) and `Sunset`
 ([RFC 8594](https://www.rfc-editor.org/rfc/rfc8594)) response headers.
+
+`common/v1` is intentionally stable from the start while every service package begins at `v1alpha1`:
+every document references the problem shape, list envelope, and shared parameters, so they change only
+by adding a `common/v2` beside them.
 
 Adding an optional field with a default is not breaking. Changing a default, narrowing an enum, or making an
 optional field required is.
@@ -199,14 +224,17 @@ None. Types live in Git; the module holds no runtime state.
 
 ### Security
 
-- **Security is declared where the route is.** Lint fails on any operation whose generated document lacks an
-  explicit `security`. An empty `security: []` is allowed only on an allowlisted set: enrollment and health.
+- **Security is declared where the route is.** Lint requires an explicit `security` and
+  `x-rackmarshal-audience` on every operation, and fails on an `operator` operation without `bearerAuth`
+  or `x-rackmarshal-roles`. `security: []` is backed by the audience's mutual TLS; an operation that takes
+  no credential at all is allowed only on the allowlist of unauthenticated operations — enrollment and
+  health — identified by `operationId`.
 - **Audiences bound exposure.** The gateway builds its route tables from `x-rackmarshal-audience`, so an
   operation is never reachable on an ingress it was not declared for ([0008](0008-gateway.md)).
 - **Secrets are marked at the field.** `x-rackmarshal-sensitive` is a struct tag, so a property cannot be
-  added without the marking travelling with it. The SDK redacts them and `common` excludes them.
+  added without the marking traveling with it. The SDK redacts them and `common` excludes them.
 - **Review.** `CODEOWNERS` requires the identity and gateway owners on changes to security schemes,
-  `security`, or `x-rackmarshal-audience`.
+  `security`, `x-rackmarshal-audience`, or `x-rackmarshal-roles`.
 - **Supply chain.** Generators are pinned by version, and releases publish the starters' signed SBOMs.
 
 ### Environment awareness
@@ -229,13 +257,13 @@ None at runtime; this module has no runtime. The generator and drift checks log 
 - **CI** — the 200-series pull request workflow runs lint, breaking, drift, and tests; the 300-series repeats
   them on main.
 - **Module** — `github.com/rackmarshal/api-schema`, `v0.x` from Conventional Commits, with the
-  Go package version independent of the API versions it contains.
+  module version independent of the API versions it contains.
 
 ### Testing
 
 - **Round trip** — every example decodes into the Go types, re-encodes, and still validates against the
   generated document.
-- **Generated artefact drift** — documents, component schemas, and reference documentation are regenerated
+- **Generated artifact drift** — documents, component schemas, and reference documentation are regenerated
   in CI and the build fails on any diff.
 - **Examples** — valid samples must pass and invalid samples must fail with the expected pointer and code.
 - **Dependency budget** — a test fails if the root `go.mod` gains any requirement.
@@ -258,8 +286,9 @@ None at runtime; this module has no runtime. The generator and drift checks log 
 
 - **Which generator** emits OpenAPI 3.0 from Go types and route declarations, and does this repository emit
   only the shared components while each service emits its own paths?
-- **How route annotations are expressed** in Go so `x-rackmarshal-audience` and `x-rackmarshal-idempotent`
-  reach the generated document — struct tags, a registration call, or a comment convention?
+- **How route annotations are expressed** in Go so `x-rackmarshal-audience`, `x-rackmarshal-roles`, and
+  `x-rackmarshal-idempotent` reach the generated document — struct tags, a registration call, or a
+  comment convention?
 - **Does `sdk` still need a generator at all** if it builds its client from these types
   directly ([0003](0003-sdk.md))?
 - **Policy state** — `EvalMetadata` and `PolicyRef` are proposed from what 0011 and 0012 already record.

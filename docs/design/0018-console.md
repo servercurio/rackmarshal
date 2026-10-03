@@ -88,15 +88,15 @@ The overview exists to answer one question — is anything wrong — and it answ
 would otherwise require four different commands against three services:
 
 ```
-┌ Environment ─────────────┐ ┌ Certificate authority ───┐
-│ qa-east · staging        │ │ backend  pkcs11          │
-│ k7m2q9x4bt6vn8rc3wzhy5jd │ │ root     expires in 412d │
-└──────────────────────────┘ │ signing  2 active, 1 next│
-                             └──────────────────────────┘
-┌ Revocation ──────────────┐ ┌ Audit anchors ───────────┐
-│ CRL   nextUpdate in 19h  │ │ last     04:37 UTC       │
-│ OCSP  nextUpdate in 41m  │ │ interval 1h · 2 missed   │ ← critical
-└──────────────────────────┘ └──────────────────────────┘
+┌ Environment ───────────────┐ ┌ Certificate authority ─────┐
+│ qa-east · staging          │ │ backend  pkcs11            │
+│ q3fz7k2m5x4c6r3t6y5b7n2w7a │ │ root     expires in 412d   │
+└────────────────────────────┘ │ signing  2 active, 1 next  │
+                               └────────────────────────────┘
+┌ Revocation ────────────────┐ ┌ Audit anchors ─────────────┐
+│ CRL   nextUpdate in 19h    │ │ last     04:37 UTC         │
+│ OCSP  nextUpdate in 41m    │ │ interval 1h · 2 missed     │ ← critical
+└────────────────────────────┘ └────────────────────────────┘
 ```
 
 Two of these carry a state that is easy to miss and expensive to miss:
@@ -104,7 +104,7 @@ Two of these carry a state that is easy to miss and expensive to miss:
 - **Revocation freshness.** 0012 makes a CRL past its `nextUpdate` stop new bundles from being accepted.
   An administrator should see that approaching rather than discover it when agents stop applying.
 - **Anchor freshness.** 0006 anchors the audit chain head to append-only storage in a separate account
-  every `audit.anchorInterval`, and a failed write is logged and retried rather than blocking operations.
+  every `audit.anchor.interval`, and a failed write is logged and retried rather than blocking operations.
   That is the correct trade-off and it makes a silent gap possible, so the gap is shown here as
   `critical` — a missing anchor is the one failure that erodes the ability to detect every other one.
 
@@ -184,8 +184,11 @@ assumed:
 - **Two-person enforcement server-side.** The approver-is-not-requester check is enforced by
   `identity`; the console refuses early only to give a readable message. A console defect cannot
   defeat the rule.
-- **Audit before effect.** Every console action produces an audit event in the same transaction as the
-  change, per 0006. An action that cannot be audited does not happen.
+- **Audit before effect.** Every console action is audited by the service that owns it. For changes
+  inside `identity`, the audit event commits in the same transaction as the change, per 0006; actions
+  owned by another service, such as `PluginPublisher` records in `provisioner`, are audited as that
+  service's design specifies ([0011](0011-provisioner.md)). An action that cannot be audited does not
+  happen.
 - **Session separation.** The console uses its own `__Host-` prefixed cookie and its own OIDC client
   registration, so a portal session is never a console session and the two cannot be confused.
 - **CSP, CSRF, and headers** exactly as 0016 specifies, with no relaxation for this surface.
@@ -193,7 +196,7 @@ assumed:
 ### Environment awareness
 
 The environment name, tier, and ID appear in the masthead and the `<title>`, as in 0017. The console adds
-one behaviour: because it administers the environment itself, it displays the environment ID in full
+one behavior: because it administers the environment itself, it displays the environment ID in full
 rather than truncated, and compares it against the ID in the session on every request, destroying the
 session on a mismatch. The step-up table above applies in every tier, `development` included, because
 `identity` enforces it; the two-person flow is therefore exercised where it is being built.

@@ -61,9 +61,11 @@ A single TLS 1.3 mutual-TLS listener on a private interface. Callers reach it th
 
 - **`gateway`** forwards `operator` and `agent` operations and the public protocol endpoints.
 - **`sso`** and other services call `internal` operations directly with service certificates.
-- **Service enrollment** is the one route that accepts a connection without a client certificate
-  (`security: []`), because the enrolling service and `gateway` have no certificate yet. This
-  answers 0003's open question for services; agents still enroll through the gateway.
+- **Service enrollment** is the one route that accepts a connection without a client certificate,
+  because the enrolling service and `gateway` have no certificate yet. Every `internal` operation
+  declares `security: []` (0002, 0008), so the exemption is an allowlisted operation ID, not the
+  `security` field. This answers 0003's open question for services; agents still enroll through the
+  gateway.
 
 #### Login delegation
 
@@ -89,7 +91,7 @@ ID: `https://<operator-ingress>/identity/oidc/<environment-id>`.
 
 | Path under the issuer (`/identity/oidc/<environment-id>`)       | Standard                                   |
 |-----------------------------------------------------------------|--------------------------------------------|
-| `/.well-known/openid-configuration`                              | OIDC Discovery, RFC 8414                   |
+| `/.well-known/openid-configuration`                              | OIDC Discovery 1.0 §4                      |
 | `/jwks.json`                                                     | RFC 7517                                   |
 | `/authorize`                                                     | RFC 6749, PKCE S256 required (RFC 7636)    |
 | `/token`                                                         | code, `refresh_token`, device code, RFC 8693 |
@@ -348,7 +350,7 @@ PostgreSQL through the starter's pgx, bun, and goose migrations. Every tenant-sc
 - The service's database role has no `UPDATE` or `DELETE` on `audit_events`, which is the control that
   stops the service from rewriting its own history. Each row also hashes the previous one, which alone
   detects tampering only against a head recorded elsewhere, since a database superuser could recompute
-  the whole chain. So the head is anchored outside the database: every `audit.anchorInterval` one
+  the whole chain. So the head is anchored outside the database: every `audit.anchor.interval` one
   replica — the one that wins the claim row described under Scaling — signs
   `{seq, hash, time, environmentId}` with its HSM or KMS key and writes it to append-only
   storage in a different cloud account from the environment, under an object-lock or WORM retention
@@ -386,10 +388,13 @@ otherwise be assumed, per
   `rackmarshal-cli audit verify` requires at least one valid anchor per interval, not exactly one.
 - **Signing keys.** The invariants are schema, not coordination:
   `CREATE UNIQUE INDEX signing_keys_one_current ON signing_keys (purpose) WHERE state = 'current'`, and
-  the same for `next`. Rotation is a single transaction that promotes `next` to `current`, `current` to
-  `previous`, and inserts a fresh `next`. A second replica rotating concurrently violates the index and
-  rolls back having done nothing, so two `current` keys cannot be published whether or not either
-  replica took a lock.
+  the same for `next`. Rotation is a single transaction that demotes `current` to `previous`, promotes
+  `next` to `current`, and inserts a fresh `next`. The demoting `UPDATE` is conditional on the `kid` the
+  replica read — `WHERE purpose = $1 AND kid = $current AND state = 'current'` — and the transaction
+  checks that it affected exactly one row. A replica rotating concurrently blocks on the row lock, then
+  finds the row no longer `current`, affects zero rows, and rolls back having done nothing. A loser
+  therefore never retires a key it did not read, and the unique indexes still forbid two `current` keys
+  whether or not either replica took a lock.
 - **CRL.** Every revocation increments a `crl_generation` counter, and so does each 12-hour scheduled
   regeneration, through a compare-and-set on the value last read so that one replica wins per interval
   and an unchanged revocation list still gets a fresh `thisUpdate`. A replica serving `/crl.der` reads
@@ -460,28 +465,28 @@ from a different replica validates it the same way.
 Prefix `RACKMARSHAL_IDENTITY_`, plus the starter's `server` and `database` blocks and CONVENTIONS' `logging`,
 `telemetry`, and `environment` blocks. The DSN moves to `database.dsnFile`.
 
-| YAML                               | Variable                                    | Default                  |
-|------------------------------------|---------------------------------------------|--------------------------|
-| `issuer.baseUrl`                   | `RACKMARSHAL_IDENTITY_ISSUER_BASE_URL`            | none — required          |
-| `keys.backend`                     | `RACKMARSHAL_IDENTITY_KEYS_BACKEND`               | `pkcs11`                 |
-| `keys.pkcs11.module`               | `RACKMARSHAL_IDENTITY_KEYS_PKCS11_MODULE`         | none                     |
-| `keys.pkcs11.tokenLabel`           | `RACKMARSHAL_IDENTITY_KEYS_PKCS11_TOKEN_LABEL`    | none                     |
-| `keys.pkcs11.pinFile`              | `RACKMARSHAL_IDENTITY_KEYS_PKCS11_PIN_FILE`       | none                     |
-| `keys.awsKms.keyId`                | `RACKMARSHAL_IDENTITY_KEYS_AWS_KMS_KEY_ID`        | none                     |
-| `keys.awsKms.region`               | `RACKMARSHAL_IDENTITY_KEYS_AWS_KMS_REGION`        | none                     |
-| `keys.kekFile`                     | `RACKMARSHAL_IDENTITY_KEYS_KEK_FILE`              | none                     |
-| `ca.intermediateCertFile`          | `RACKMARSHAL_IDENTITY_CA_INTERMEDIATE_CERT_FILE`  | none — required          |
-| `tokens.accessTtl`                 | `RACKMARSHAL_IDENTITY_TOKENS_ACCESS_TTL`          | `10m`                    |
-| `tokens.signingKeyRotation`        | `RACKMARSHAL_IDENTITY_TOKENS_SIGNING_KEY_ROTATION`| `720h`                   |
-| `stepUp.maxAge`                    | `RACKMARSHAL_IDENTITY_STEP_UP_MAX_AGE`            | `5m`                     |
-| `enrollment.agentDefaultTtl`       | `RACKMARSHAL_IDENTITY_ENROLLMENT_AGENT_DEFAULT_TTL` | `1h` (max `24h`)       |
-| `kubernetes.clusterIssuersFile`    | `RACKMARSHAL_IDENTITY_KUBERNETES_CLUSTER_ISSUERS_FILE` | none (path disabled) |
-| `kubernetes.maxTokenAge`           | `RACKMARSHAL_IDENTITY_KUBERNETES_MAX_TOKEN_AGE`   | `10m` (max `15m`)        |
-| `certificates.serviceLifetime`     | `RACKMARSHAL_IDENTITY_CERTIFICATES_SERVICE_LIFETIME` | `168h` (fixed by 0001) |
-| `revocation.ocspNextUpdate`        | `RACKMARSHAL_IDENTITY_REVOCATION_OCSP_NEXT_UPDATE`| `1h`                     |
-| `revocation.crlNextUpdate`         | `RACKMARSHAL_IDENTITY_REVOCATION_CRL_NEXT_UPDATE` | `24h`                    |
-| `audit.anchorInterval`             | `RACKMARSHAL_IDENTITY_AUDIT_ANCHOR_INTERVAL`      | `1h`                     |
-| `audit.anchor.uri`                 | `RACKMARSHAL_IDENTITY_AUDIT_ANCHOR_URI`           | none — required in `production` |
+| YAML                            | Variable                                               | Default                         |
+|---------------------------------|--------------------------------------------------------|---------------------------------|
+| `issuer.baseUrl`                | `RACKMARSHAL_IDENTITY_ISSUER_BASE_URL`                 | none — required                 |
+| `keys.backend`                  | `RACKMARSHAL_IDENTITY_KEYS_BACKEND`                    | `pkcs11`                        |
+| `keys.pkcs11.module`            | `RACKMARSHAL_IDENTITY_KEYS_PKCS11_MODULE`              | none                            |
+| `keys.pkcs11.tokenLabel`        | `RACKMARSHAL_IDENTITY_KEYS_PKCS11_TOKEN_LABEL`         | none                            |
+| `keys.pkcs11.pinFile`           | `RACKMARSHAL_IDENTITY_KEYS_PKCS11_PIN_FILE`            | none                            |
+| `keys.awsKms.keyId`             | `RACKMARSHAL_IDENTITY_KEYS_AWS_KMS_KEY_ID`             | none                            |
+| `keys.awsKms.region`            | `RACKMARSHAL_IDENTITY_KEYS_AWS_KMS_REGION`             | none                            |
+| `keys.kekFile`                  | `RACKMARSHAL_IDENTITY_KEYS_KEK_FILE`                   | none                            |
+| `ca.intermediateCertFile`       | `RACKMARSHAL_IDENTITY_CA_INTERMEDIATE_CERT_FILE`       | none — required                 |
+| `tokens.accessTtl`              | `RACKMARSHAL_IDENTITY_TOKENS_ACCESS_TTL`               | `10m`                           |
+| `tokens.signingKeyRotation`     | `RACKMARSHAL_IDENTITY_TOKENS_SIGNING_KEY_ROTATION`     | `720h`                          |
+| `stepUp.maxAge`                 | `RACKMARSHAL_IDENTITY_STEP_UP_MAX_AGE`                 | `5m`                            |
+| `enrollment.agentDefaultTtl`    | `RACKMARSHAL_IDENTITY_ENROLLMENT_AGENT_DEFAULT_TTL`    | `1h` (max `24h`)                |
+| `kubernetes.clusterIssuersFile` | `RACKMARSHAL_IDENTITY_KUBERNETES_CLUSTER_ISSUERS_FILE` | none (path disabled)            |
+| `kubernetes.maxTokenAge`        | `RACKMARSHAL_IDENTITY_KUBERNETES_MAX_TOKEN_AGE`        | `10m` (max `15m`)               |
+| `certificates.serviceLifetime`  | `RACKMARSHAL_IDENTITY_CERTIFICATES_SERVICE_LIFETIME`   | `168h` (fixed by 0001)          |
+| `revocation.ocspNextUpdate`     | `RACKMARSHAL_IDENTITY_REVOCATION_OCSP_NEXT_UPDATE`     | `1h`                            |
+| `revocation.crlNextUpdate`      | `RACKMARSHAL_IDENTITY_REVOCATION_CRL_NEXT_UPDATE`      | `24h`                           |
+| `audit.anchor.interval`         | `RACKMARSHAL_IDENTITY_AUDIT_ANCHOR_INTERVAL`           | `1h`                            |
+| `audit.anchor.uri`              | `RACKMARSHAL_IDENTITY_AUDIT_ANCHOR_URI`                | none — required in `production` |
 
 Validation rejects values beyond 0001's bounds: agent token TTL over 24 hours, agent certificates
 outside 30–90 days, or a service lifetime other than 7 days. It also rejects a
@@ -500,9 +505,10 @@ than one service.
   container. Linux binaries and the image link glibc, so they are built on the oldest target in the
   support matrix — Enterprise Linux 9, glibc 2.34 ([0005](0005-infrastructure.md)) — which keeps
   them loadable on EL10, Debian 12 and 13, and Ubuntu 24.04 and 26.04, all of which ship a newer glibc.
-  Building on a newer glibc than the target host does not run there. A `CGO_ENABLED=0` build remains
-  available for deployments that want no cgo and ships `aws-kms` and `kek-sealed` only, which then must
-  be selected explicitly. Whether the starter's Taskfile builds with cgo today is unverified.
+  A binary built against a newer glibc will not run on a host with an older one. A `CGO_ENABLED=0`
+  build remains available for deployments that want no cgo and ships `aws-kms` and `kek-sealed` only,
+  which then must be selected explicitly. Whether the starter's Taskfile builds with cgo today is
+  unverified.
 - `v0.x` until accepted; API versions follow [0002](0002-api-schema.md).
 
 ### Testing
@@ -529,9 +535,9 @@ than one service.
   but links 18 modules including chi, gorilla/securecookie, and OpenTelemetry.
 - **[ory/fosite](https://github.com/ory/fosite)** (v0.49.0) — links 53 modules including gRPC and the
   official OTLP exporter.
-- **Cloud KMS SDKs** — native APIs without a PKCS#11 library, but Google's client brings gRPC and every
-  cloud adds its own module tree. A build-tagged `awskms` backend is the fallback if PKCS#11 proves
-  impractical on AWS KMS.
+- **Other cloud KMS SDKs** — native APIs without a PKCS#11 library, but Google's client brings gRPC and
+  every cloud adds its own module tree. AWS's SDK is the exception, adopted as the `aws-kms` backend
+  because it links 5 modules and needs no cgo.
 - **Opaque bearer API tokens** checked by introspection on every request — simpler, but the token
   services see would be unsigned, which 0001's environment binding rules out.
 - **Hosting login pages in `identity`** — fewer hops, but puts an internet-facing surface on the
@@ -567,12 +573,13 @@ than one service.
   [0005](0005-infrastructure.md), [0007](0007-sso.md), [CONVENTIONS.md](CONVENTIONS.md).
 - [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636),
   [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009), [RFC 7517](https://www.rfc-editor.org/rfc/rfc7517),
-  [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252), [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414),
-  [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628), [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693),
+  [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252), [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628),
+  [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693),
   [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), [RFC 9470](https://www.rfc-editor.org/rfc/rfc9470),
   [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700).
 - [OpenID Connect Core](https://openid.net/specs/openid-connect-core-1_0.html) and
-  [Discovery](https://openid.net/specs/openid-connect-discovery-1_0.html);
+  [Discovery 1.0](https://openid.net/specs/openid-connect-discovery-1_0.html) (§4 defines the
+  `/.well-known/openid-configuration` path appended to the issuer);
   [SAML 2.0](https://docs.oasis-open.org/security/saml/v2.0/).
 - [RFC 5280](https://www.rfc-editor.org/rfc/rfc5280), [RFC 6960](https://www.rfc-editor.org/rfc/rfc6960),
   [RFC 2986](https://www.rfc-editor.org/rfc/rfc2986).
