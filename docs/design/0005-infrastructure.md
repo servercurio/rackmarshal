@@ -31,8 +31,9 @@ ID, and CA bundle, and the control node holds a root-signed certificate
 
 Kubernetes support is mandatory, beside containers and direct installs on a compatible OS, all through
 this one pipeline. Certificate bootstrap depends on the target: the control node delivers single-use
-tokens to containers, hosts, and plugin sidecars, while pods enroll with projected service account
-tokens that `identity` verifies offline. Service repositories ship the artifacts in
+tokens to containers and hosts, pods enroll with projected service account tokens that `identity`
+verifies offline, and plugin sidecars enroll with tokens their own pod's `provisioner` requests. Service
+repositories ship the artifacts in
 [CONVENTIONS — Deployment artifacts](CONVENTIONS.md#deployment-artifacts).
 
 **Goals**
@@ -222,7 +223,7 @@ on role and playbook YAML; the rest run on rendered output. Initial rule set (pr
 | kubernetes | no host namespaces or `hostPath`; `NetworkPolicy` present; no Role, RoleBinding, or Secret |
 | kubernetes | `automountServiceAccountToken: false`; one projected token, audience `spiffe://<id>/service/identity`, 600 s, init container only |
 | kubernetes | key volume is `emptyDir` `medium: Memory`; init and main containers use the same digest     |
-| kubernetes | a plugin's enrollment Secret is mounted only by that plugin's sidecar container            |
+| kubernetes | no plugin enrollment Secret; a sidecar mounts only the socket and its own key `emptyDir`   |
 | compose    | non-root `user`, `read_only`, `cap_drop: [ALL]`, `no-new-privileges`, no host network      |
 | quadlet    | non-root `User=`, `ReadOnly=true`, `NoNewPrivileges=true`, `DropCapability=all`, no `AutoUpdate=` |
 | systemd    | `NoNewPrivileges=`, `ProtectSystem=strict`, non-root `User=`, token via `LoadCredential=`  |
@@ -354,7 +355,7 @@ ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OC
    Renewals need no token and so no approval.
 
 **Kubernetes** — no Ansible run is involved, so pods enroll on start, scale-out, and rescheduling
-(plugin sidecars excepted, below):
+(plugin sidecars through `provisioner`, below):
 
 1. Each service has its own ServiceAccount, and pods set `automountServiceAccountToken: false`; services
    never call the Kubernetes API.
@@ -375,24 +376,19 @@ ECDSA P-256 key, and renews at two-thirds of its 7-day lifetime with the same OC
 
 **Plugin sidecars on Kubernetes** — a plugin service runs as a sidecar in the provisioner pod
 ([0021](0021-plugin-extensibility.md)), and the pod's one service account maps to `provisioner`, so the
-sidecar cannot enroll with the projected token. It enrolls with a service enrollment token instead:
+sidecar cannot enroll with the projected token. It enrolls with a service enrollment token that its own
+pod's `provisioner` requests, so sidecars enroll on start, scale-out, and rescheduling without the
+control node:
 
-1. On each run, for each plugin service, the control node requests one single-use token for
-   `service/plugin-<name>` per provisioner replica, as in step 1 for hosts. A pod's key cannot be
-   generated before the pod exists, so the control node generates each token's key pair itself and
-   registers its SPKI SHA-256.
-2. It writes the token and key pairs into one Secret per plugin with `kubernetes.core.k8s` and `no_log`
-   (see Least privilege and secrets), mounted only into that plugin's sidecar container — never into
-   the provisioner container or the enrollment init container. The socket stays on the shared
-   `emptyDir`; the sidecar's key and certificate go to its own `medium: Memory` `emptyDir`.
-3. The sidecar tries each pair in turn. Redemption is atomic (0006), so each token enrolls one sidecar
-   and a sidecar that loses a race moves to the next pair. It renews in place like any service.
-4. Keeping the key beside the token in a Secret adds no reach: whoever can read Secrets in the
-   namespace can already run a pod as `provisioner` (see Namespaces are identities).
+1. The sidecar generates its ECDSA P-256 key pair in its own `medium: Memory` `emptyDir` and writes only
+   `SHA-256(SubjectPublicKeyInfo)` to the shared socket `emptyDir`.
+2. The provisioner container, once enrolled as `service/provisioner`, requests a single-use
+   `service/plugin-<name>` token bound to that hash (0006) and writes the token beside it. The token is
+   useless without the private key, which never leaves the sidecar's volume.
+3. The sidecar redeems the token and then renews in place like any service. A restarted container keeps
+   its `emptyDir` key and certificate; a sidecar that has lost its certificate repeats steps 1 and 2.
 
-Tokens last 15 minutes, so they cover only the rollout the run drives. A provisioner pod created later
-— scale-out, eviction, rescheduling — starts with its plugin sidecars unready until the next run issues
-fresh tokens (see Open questions); container restarts within a pod keep the `emptyDir` key.
+No Secret holds a sidecar token or key, and the control node issues nothing for sidecars.
 
 #### Least privilege and secrets
 
@@ -499,9 +495,6 @@ commit. Tags `vX.Y.Z` mark execution environment image releases, built with ansi
   and 0006's discovery mode becomes the norm (unverified)?
 - **Pod deletion** — offline verification cannot see a deleted pod, whose certificate stays valid for up
   to 7 days after its key is gone. Acceptable, or revoke on deletion?
-- **Plugin sidecars after rescheduling** — a provisioner pod created between runs waits for the next run
-  to enroll its plugin sidecars. Accept that, schedule a run on pod events, or issue spare tokens with
-  the 1-hour maximum TTL?
 - **Artifact verifiers** — tooling for deb, rpm, and Authenticode signatures, and cosign for charts?
 - **Authenticode signing** — which certificate signs the Windows installers, and where does it live?
 - **Control-node certificate lapse** — recover by root ceremony, or have two control nodes cross-renew?

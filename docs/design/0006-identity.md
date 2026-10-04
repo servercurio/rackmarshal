@@ -129,7 +129,7 @@ client's loopback redirect URIs match any port on `127.0.0.1`
 | `POST /identity/v1alpha1/agent-enrollments`                   | agent      | none           |
 | `POST /identity/v1alpha1/certificate-renewals`                | agent, internal | mTLS; SPIFFE ID copied from the peer |
 | `POST /identity/v1alpha1/revocations`                         | operator   | bearer, step-up |
-| `POST /identity/v1alpha1/service-enrollment-tokens`           | internal   | mTLS, control node only |
+| `POST /identity/v1alpha1/service-enrollment-tokens`           | internal   | mTLS, control node; `provisioner` for `service/plugin-*` |
 | `POST /identity/v1alpha1/service-enrollments`                 | internal   | none           |
 | `POST /identity/v1alpha1/service-enrollment-approvals`        | operator   | bearer, step-up |
 | `GET /identity/v1alpha1/cluster-issuers`                      | internal   | mTLS, control node only |
@@ -200,7 +200,7 @@ SHA-256 is stored.
 | Kind    | Bound to                                                  | TTL default / max | Created by                   |
 |---------|-----------------------------------------------------------|-------------------|------------------------------|
 | agent   | environment, tenant, optional host labels                 | 1h / 24h          | `cli`, `console`, `portal`   |
-| service | environment, `service/<name>`, host or namespace, CSR key | 15m / 1h          | control node certificate     |
+| service | environment, `service/<name>`, host or namespace, CSR key | 15m / 1h          | control node; `provisioner` (plugins) |
 
 Operators create agent tokens through `cli` or `console`; tenant administrators create them through
 `portal`, for their own tenant only. Every agent token creation requires step-up (see Security),
@@ -222,10 +222,13 @@ it through `POST /identity/v1alpha1/service-enrollment-approvals`.
 
 Plugin services ([0021](0021-plugin-extensibility.md)) enroll as `service/plugin-<name>` with the same
 tokens. On Kubernetes a plugin sidecar shares the provisioner pod's service account, which maps only to
-`provisioner`, so it cannot use the projected-token path below. The control node instead requests one
-token per provisioner replica, naming the cluster and namespace in place of a host; since the pod does
-not exist yet, it generates each key pair itself, registers the SPKI hash as above, and delivers token
-and key in a Secret mounted only into the sidecar container ([0005](0005-infrastructure.md)).
+`provisioner`, so it cannot use the projected-token path below. Instead the pod's own `provisioner`,
+authenticated as `service/provisioner`, requests the token: the sidecar generates its key and publishes
+only its SPKI hash, `provisioner` requests a token bound to that hash for the cluster and namespace, and
+the sidecar redeems it ([0005](0005-infrastructure.md)). `provisioner` may request tokens only for
+`service/plugin-<name>` identities, never for another service, and each request is audited. This adds
+little reach: a plugin service accepts calls only from `provisioner`'s SPIFFE ID (0021), so impersonating
+one gains a compromised `provisioner` nothing it does not already hold.
 
 #### Kubernetes service account enrollment
 
@@ -363,7 +366,7 @@ PostgreSQL through the starter's pgx, bun, and goose migrations. Every tenant-sc
 | `accounts`                     | `principal_id`, `username`, `email`, `password_hash` (Argon2id PHC string)   |
 | `webauthn_credentials`         | `principal_id`, `credential_id`, `public_key`, `sign_count`                  |
 | `tenant_memberships`, `role_bindings` | `principal_id`, `tenant_id`, `role`                                   |
-| `identity_providers`           | `id`, `tenant_id`, `protocol`, `metadata`, `claim_mappings`, `jit_enabled`   |
+| `identity_providers`           | `id`, `tenant_id`, `protocol`, `metadata`, `claim_mappings`, `jit_enabled`, `client_secret_sealed`, `dek_wrapped` |
 | `federated_identities`         | `provider_id`, `external_subject`, `principal_id` (unique pair)              |
 | `sessions`                     | `id`, `principal_id`, `amr`, `expires_at`, `revoked_at`                      |
 | `login_challenges`             | `id`, `principal_id`, `amr`, `binding_hash`, `verifier_hash`, `expires_at`   |
@@ -380,6 +383,11 @@ PostgreSQL through the starter's pgx, bun, and goose migrations. Every tenant-sc
 
 - Passwords use Argon2id at no less than OWASP's minimum, 19 MiB, 2 iterations, parallelism 1
   ([Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)).
+- An OIDC client secret is stored only sealed: AES-256-GCM under a per-provider data key, which the
+  environment's key backend wraps (`pkcs11`, `aws-kms`, or `kek-sealed` outside `production`), with the
+  provider ID as associated data so a sealed value cannot be moved to another row. The plaintext exists
+  only in memory while `GET /identity-providers/{providerId}` returns it to `sso` over mutual TLS, so a
+  database backup holds no usable client secret.
 - The service's database role has no `UPDATE` or `DELETE` on `audit_events`, which is the control that
   stops the service from rewriting its own history. Each row also hashes the previous one, which alone
   detects tampering only against a head recorded elsewhere, since a database superuser could recompute
@@ -453,7 +461,7 @@ from a different replica validates it the same way.
   domain (0005), so even a misissued leaf cannot name another environment.
 - **Caller pinning** — internal operations check the caller's SPIFFE ID: `sso` for login operations and
   IdP settings, `gateway` for token exchange, `control-node/*` for service enrollment tokens and cluster
-  issuers.
+  issuers, and `provisioner` for `service/plugin-<name>` enrollment tokens only.
 - **Brute force** — failed password, WebAuthn, and user-code attempts are counted per account and per
   source in PostgreSQL, with exponential delays rather than hard lockouts that attackers could abuse.
 - **No enumeration** — verification responses do not distinguish unknown accounts from bad passwords.
@@ -570,6 +578,10 @@ than one service.
   own tenant without step-up, each capped at 1 hour and audited with the API token's ID; it is refused
   for another tenant, for every other operation, and for creating another API token; creating it
   without step-up fails.
+- **Plugin service tokens** — `provisioner` can request a `service/plugin-<name>` enrollment token but not
+  one for any other service; the token fails with any key but the one whose hash it names.
+- **IdP secrets at rest** — a stored client secret is unreadable without the key backend, and a sealed
+  value copied to another provider's row fails to open.
 - **Data** — forward-only migrations applied on PostgreSQL in CI ([0005](0005-infrastructure.md)); a
   test asserts every tenant-scoped query filters by `tenant_id`.
 
