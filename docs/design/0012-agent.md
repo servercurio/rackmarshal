@@ -280,13 +280,16 @@ every 6 hours and changed-digest deltas every 5 minutes go to `inventory` (opera
   package, so a plugin that bypasses the proxy reaches only loopback: `IPAddressDeny=any` with
   `IPAddressAllow=localhost` in the executor's systemd unit (see Security), which every plugin it forks
   inherits, and the pf equivalent on macOS. On Windows the agent creates a Windows Firewall outbound
-  block rule (`New-NetFirewallRule -Direction Outbound -Action Block -Program`, enforced by the Windows
-  Filtering Platform) for the executor binary and one for each installed plugin executable path, each
-  with `-RemoteAddress` covering every range except loopback so the proxy stays reachable
+  block rule (`New-NetFirewallRule -Direction Outbound -Action Block`, enforced by the Windows Filtering
+  Platform) for the executor and one for each installed plugin executable, each with `-RemoteAddress`
+  covering every range except loopback so the proxy stays reachable
   ([New-NetFirewallRule](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule)).
-  A `-Program` rule matches the program that owns the connection, so a rule on the executor binary
-  alone does not cover the child processes it launches. A plugin's rule is created when it is installed
-  (by the agent package for core plugins) and removed when it is uninstalled.
+  The executor's rule is scoped with `-Service` to the executor's service, not `-Program`, because
+  `serve` and the executor run the same `rackmarshal-agent.exe` as two services and a program rule would
+  block `serve` too. Plugin rules use `-Program`: each plugin is its own executable, and a rule on the
+  executor alone does not cover the child processes it launches under their own accounts. A plugin's rule
+  is created when it is installed (by the agent package for core plugins) and removed when it is
+  uninstalled.
 
   Every plugin's external traffic leaves the host from `serve`'s proxy, so OS rules keyed on a plugin's
   user or program would never see it; the lockdown already covers a bypass. What OS policy can still add

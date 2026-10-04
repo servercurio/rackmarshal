@@ -422,11 +422,9 @@ and is rebuilt on a pin change like any other bundle input.
   ([0005](0005-infrastructure.md)), and the sidecar mounts the socket `emptyDir` and its own key volume,
   never the provisioner's. A pod has one service account, mapped to `provisioner`, so the sidecar cannot
   enroll with the pod's projected token. It enrolls instead with a single-use service enrollment token
-  for `service/plugin-<name>`, one per sidecar, that the control node issues
-  ([0005](0005-infrastructure.md), [0006](0006-identity.md)) and mounts as a
-  [Secret](https://kubernetes.io/docs/concepts/configuration/secret/) only into the sidecar container;
-  the provisioner container and the init container do not mount it, and the socket stays on the shared
-  `emptyDir`. A `NetworkPolicy`
+  for `service/plugin-<name>` that its pod's `provisioner` requests, bound to a key the sidecar generates
+  in its own volume and never shares ([0005](0005-infrastructure.md), [0006](0006-identity.md)); no
+  Secret carries a token or key, and the socket stays on the shared `emptyDir`. A `NetworkPolicy`
   ([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)) can
   narrow what the whole pod reaches but applies per pod, so it cannot separate the sidecar from the
   provisioner; that takes a separate pod, which trades the local socket for a network listener.
@@ -499,9 +497,9 @@ out at build time rather than at import.
   by the agent, and an agent that reports an invalid result is caught by the provisioner.
 - **Proposals** — `Propose` output passes through admission and is denied by the tenant's policy when the
   tenant denies it, and by the plugin's own policy when the plugin does.
-- **Sidecar enrollment** — on Kubernetes the sidecar enrolls as `service/plugin-<name>` with its own
-  enrollment token, the token Secret is mounted in the sidecar container and in neither the provisioner
-  nor the init container, and a reused token is refused.
+- **Sidecar enrollment** — on Kubernetes the sidecar enrolls as `service/plugin-<name>` with a token
+  `provisioner` requested for the sidecar's own key; the token alone fails without that key, a reused
+  token is refused, and `provisioner` cannot request a token for any other service.
 - **Process model** — the plugin host reconnects when a crashed service restarts, and a service that
   is down fails that plugin's calls rather than `provisioner`. The host refuses a peer whose SPIFFE ID
   is not the pinned plugin's `plugin-<name>`, and a service whose manifest name or version differs from
@@ -528,9 +526,9 @@ out at build time rather than at import.
   itself, so their lifecycle and failures would be its own. A separate process with its own lifecycle
   keeps them apart and costs a socket.
 - **A separate pod per provisioner service on Kubernetes**, with its own service account and projected
-  token — a cleaner credential boundary than a mounted enrollment token, and a `NetworkPolicy` could then
-  separate it from `provisioner`, but the local socket becomes a network listener. A token mounted only
-  into the sidecar gives it its own identity while keeping the socket.
+  token — a cleaner credential boundary, and a `NetworkPolicy` could then separate it from
+  `provisioner`, but the local socket becomes a network listener. A token `provisioner` requests for the
+  sidecar's own key gives it its own identity while keeping the socket.
 - **REST + JSON between the provisioner and its plugins**, to avoid amending the convention — consistent
   with service-to-service traffic, but a plugin author would then implement two wire protocols for one
   plugin, and the contract for the two halves would diverge over time. Widening the existing plugin

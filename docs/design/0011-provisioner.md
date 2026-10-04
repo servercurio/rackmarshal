@@ -291,9 +291,9 @@ A provisioner service is an ordinary Rackmarshal service, not a go-plugin plugin
 process, never in this address space: a sidecar container on `kubernetes`, a
 `rackmarshal-provisioner-plugin-<name>.service` unit on `package`, an SCM service on `windows`, each with
 its own lifecycle. It enrolls with `identity` like any service, as
-`spiffe://<environment-id>/service/plugin-<name>`; on `kubernetes` its single-use service enrollment
-token is a Secret mounted only into the sidecar container, never into the provisioner or init container,
-and the socket directory is a shared `emptyDir` ([0021](0021-plugin-extensibility.md)). The provisioner
+`spiffe://<environment-id>/service/plugin-<name>`; on `kubernetes` this service requests the sidecar's
+single-use enrollment token, bound to the key the sidecar generated, and the socket directory is a shared
+`emptyDir` ([0005](0005-infrastructure.md), [0021](0021-plugin-extensibility.md)). The provisioner
 dials it with gRPC over a Unix domain socket under `plugins.socketDir` — `AF_UNIX`, which Windows 10
 1803 and Server 2019 and later also provide
 ([Microsoft](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/)) — with mutual TLS
