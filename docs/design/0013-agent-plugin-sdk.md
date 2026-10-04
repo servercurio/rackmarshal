@@ -73,7 +73,7 @@ agent-plugin-sdk/
 ├── pkg/
 │   ├── plugin/v1alpha1/                 # package pluginv1alpha1 (generated, committed)
 │   ├── handshake/                       # Config, SupportedProtocols
-│   ├── manifest/                        # Manifest, Capability, Privileges, NetworkGrant, Policy
+│   ├── manifest/                        # Manifest, Capability, Privileges, NetworkGrant, PathGrant, Policy
 │   ├── bundle/                          # build, read, and verify a provisioner bundle (0021)
 │   ├── serve/                           # Main, Options, FactsCollector, ResourceHandler, Granted
 │   ├── host/                            # Launch, Config, Plugin
@@ -117,8 +117,9 @@ message ApplyResourceResponse {
 ```
 
 `result_json` is the return half of `spec_json`, added by [0021](0021-plugin-extensibility.md). `serve`
-refuses a response larger than 16 KiB, and the agent validates the payload against the result schema in
-the plugin's provisioner bundle before it reaches the outbox. `PlanResourceResponse` carries the same
+refuses a response larger than 16 KiB, and the agent validates the payload against the result schema
+the signed directive bundle carries for that kind, copied from the plugin's provisioner bundle (0012),
+before it reaches the outbox. `PlanResourceResponse` carries the same
 field for a dry run. A result that is oversized, unparseable, or non-conforming fails that one resource
 with `result_invalid`; it never fails the report.
 
@@ -234,7 +235,7 @@ privileges:
     - { host: "*", port: 80 }
     - { host: "*", port: 443 }
 platforms: [linux/amd64, linux/arm64]
-policies:                       # 0021; the same files ship in the provisioner bundle
+policies:                       # 0021; files ship in the provisioner bundle, host phase via directives
   - { phase: host, package: rackmarshal.plugin.packages.host, file: policy/host.rego }
 ```
 
@@ -298,6 +299,27 @@ privileges:
   `serve.Granted(ctx)` exposes the allowlist so a plugin's own clients refuse other destinations first.
   Neither check contains hostile code, which is why the grant is only given to signed plugins the
   operator approved.
+
+#### Path grants
+
+`privileges.paths` is a list of `{path, access}` entries, where `path` is absolute and `access` is
+`read` or `write`; absent or empty means no filesystem access beyond what the plugin's own user already
+has. The grant follows the network rules: a manifest only requests, and the agent grants the request
+narrowed by root-owned `plugins.grants`, never widened. One entry needs no operator listing: a `write`
+request for the plugin's own state directory, `/var/lib/rackmarshal-plugin-<name>`, which the executor
+creates at install, owned by `rackmarshal-plugin-<name>` with mode `0700`, and removes at uninstall
+(0012). The plugin creates whatever it needs beneath it. Any other path must be listed in
+`plugins.grants`, and the executor never changes the owner or mode of a path it did not create, so an
+unprivileged plugin writes elsewhere only where the operator has already given its user access. For a
+root plugin the grant is enforced inside the plugin (`serve.Granted(ctx)`, writes through `os.Root`), as
+defense in depth rather than a barrier.
+
+```yaml
+privileges:
+  runAsRoot: false
+  paths:
+    - { path: /var/lib/rackmarshal-plugin-example, access: write }
+```
 
 #### Environment check
 
@@ -452,8 +474,9 @@ None; only in-memory grant and environment state per plugin process.
 - **Untrusted replies** — the agent validates and size-caps facts and verifier replies, and never shows
   plugin error details to operators verbatim.
 - **Least privilege** — manifests default to no root, exec, writes, or network. Network grants are host
-  and port allowlists, granted by default only to the core validator's `refresh` mode. Fuzzing covers
-  manifest, capability, network grant, and fact-name parsing.
+  and port allowlists, granted by default only to the core validator's `refresh` mode; path grants
+  default to the plugin's own state directory, and only when requested. Fuzzing covers manifest,
+  capability, network grant, path grant, and fact-name parsing.
 
 ### Environment awareness
 
@@ -506,9 +529,10 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
   capabilities, and for RPCs outside the granted mode; panics as `INTERNAL`; JSON log lines; and no
   changes from `Plan` after `Apply` for author-supplied samples.
 - **SDK tests** — negotiation (host `{1,2}` against plugin `{1}`), a checksum mismatch, the
-  writable-path refusal, `core: true` or `verifier:sigstore` without `Config.Core` refused, network grant
-  validation, the proxy token passed only on its descriptor, a non-dumpable plugin process on Linux,
-  fuzzers, `-race`, and the allowlist.
+  writable-path refusal, `core: true` or `verifier:sigstore` without `Config.Core` refused, network and
+  path grant validation (a relative path, or a path outside `plugins.grants` other than the plugin's own
+  state directory, is not granted), the proxy token passed only on its descriptor, a non-dumpable
+  plugin process on Linux, fuzzers, `-race`, and the allowlist.
 
 ## Alternatives considered
 
@@ -541,8 +565,9 @@ name, tier, and ID in `Init`, and `host.Launch` refuses any `<PREFIX>_ENVIRONMEN
 - **Plugin spans** — no export (proposed), forwarding through the agent, or direct export with a network
   grant?
 - **Third-party kinds** — which groups can they use? How their schemas reach the agent and
-  [0011](0011-provisioner.md) is settled: the required provisioner bundle carries them
-  ([0021](0021-plugin-extensibility.md)). The group-naming half is still open.
+  [0011](0011-provisioner.md) is settled: the required provisioner bundle carries them to
+  `provisioner`, which embeds the ones a host uses in that host's signed directive bundle
+  ([0021](0021-plugin-extensibility.md), [0012](0012-agent.md)). The group-naming half is still open.
 - **Long operations** — unary `ApplyResource` with a deadline (proposed), or streamed progress?
 - **Scope** — `GRPCBroker` host callbacks (secrets, content), and host-attached device drivers?
 - **Hardening** — execute from a verified file descriptor to close the `SecureConfig` gap? Windows ACL

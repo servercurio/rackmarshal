@@ -75,9 +75,13 @@ that proves the full request loop ([Sequencing](0001-project-repositories.md#seq
   names that do not collide with built-ins. A class's `attributeSchema` and optional `factSchema` are
   JSON Schema 2020-12. These are tenant-supplied at runtime and unrelated to the Go types in 0002, which
   describe Rackmarshal's own contracts. Removing a class that endpoints still use is refused.
-- **Labels** follow the Kubernetes syntax: an optional DNS-subdomain prefix, then a name of 63 characters
-  or fewer. The `rackmarshal.servercurio.com/` prefix is reserved. Selectors support `=`, `!=`, `in`, `notin`,
-  and key existence.
+- **Labels** follow the
+  [Kubernetes syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set):
+  a key is an optional DNS-subdomain prefix of 253 characters or fewer and a `/`, then a name of 63
+  characters or fewer; a value is 63 characters or fewer and may be empty. The name and a non-empty value
+  begin and end with an alphanumeric character, with `-`, `_`, `.`, and alphanumerics between. The
+  `rackmarshal.servercurio.com/` prefix is reserved. Selectors support `=`, `!=`, `in`, `notin`, and key
+  existence.
 - **Capabilities** — the class declares them. An agent reports the capabilities it actually has, based on
   installed plugins, as the fact `capabilities.observed`.
 - **IDs** — opaque 26-character random base32 strings, like agent IDs. Names are unique among a tenant's
@@ -90,7 +94,7 @@ that proves the full request loop ([Sequencing](0001-project-repositories.md#seq
   "class": "linux-server",
   "labels": { "site": "dc1", "role": "web" },
   "attributes": { "owner": "platform-team", "rack": "r12" },
-  "management": { "mode": "agent", "agentId": "h2j4l6n3p5s7u2w4y6a3e5i7o2" },
+  "agentId": "h2j4l6n3p5s7u2w4y6a3e5i7o2",
   "lifecycle": "active",
   "factsReportedAt": "2026-09-15T10:04:05Z",
   "resourceVersion": "42",
@@ -101,7 +105,9 @@ that proves the full request loop ([Sequencing](0001-project-repositories.md#seq
 ```
 
 `lifecycle` is `registered`, `active`, `decommissioning`, or `retired`. Facts are returned by a separate
-sub-resource so lists stay small.
+sub-resource so lists stay small. An endpoint has no management mode of its own: its mode is always its
+class's `enforcement`, which is immutable, so the two can never disagree. `agentId` is present only on an
+endpoint of an `agent` class once an agent is bound to it.
 
 #### API sketch
 
@@ -255,7 +261,6 @@ CREATE UNIQUE INDEX endpoint_classes_builtin_name ON endpoint_classes (name) WHE
 CREATE TABLE endpoints (
   tenant_id text NOT NULL, id text NOT NULL, name text NOT NULL, class_name text NOT NULL,
   labels jsonb NOT NULL DEFAULT '{}', attributes jsonb NOT NULL DEFAULT '{}',
-  management_mode text NOT NULL CHECK (management_mode IN ('agent', 'agentless')),
   agent_id text UNIQUE,                   -- agent IDs are unique within the environment
   lifecycle text NOT NULL DEFAULT 'registered',
   facts jsonb NOT NULL DEFAULT '{}', facts_digest bytea, facts_reported_at timestamptz,
@@ -264,8 +269,8 @@ CREATE TABLE endpoints (
   facts_version bigint NOT NULL DEFAULT 0,      -- bumped by reports and agentless fact writes
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   retired_at timestamptz,
-  PRIMARY KEY (tenant_id, id),
-  CHECK (management_mode = 'agentless' OR lifecycle = 'registered' OR agent_id IS NOT NULL)
+  PRIMARY KEY (tenant_id, id)
+  -- no mode column: the mode is the class's enforcement; the binding rule is checked on write (below)
 );
 CREATE UNIQUE INDEX endpoints_live_name ON endpoints (tenant_id, name) WHERE lifecycle <> 'retired';
 CREATE INDEX endpoints_labels ON endpoints USING gin (labels);   -- jsonb_ops: @> and ?
@@ -312,6 +317,12 @@ DROP TABLE agent_report_receipts, endpoint_events, endpoint_relationships, endpo
   endpoint_classes;
 ```
 
+- **Management mode** is read from the class's `enforcement` and never stored on the endpoint, so a
+  class and its endpoints cannot disagree. A `CHECK` cannot read `endpoint_classes`, so the transaction
+  that creates an endpoint, changes its class, binds an agent, or changes `lifecycle` enforces the
+  binding rule against the class row: an `agent`-class endpoint leaves `registered` only with an
+  `agent_id`, and an `agentless`-class endpoint never has one. `enforcement` is immutable and a class in
+  use cannot be removed, so the rule cannot be broken from the class side.
 - **Label selectors** compile to `labels @> '{"site":"dc1"}'` for equality and `in`, and `labels ? 'k'` for
   existence. Both use the default `jsonb_ops` GIN index; `jsonb_path_ops` lacks `?`.
 - **Retention** — per tenant, swept per tenant. Row-level security forces that shape rather than
@@ -395,7 +406,9 @@ replicas by whichever one the gateway routes to.
 - **Confidential facts.** Facts are tenant data. They are never logged, never placed in metrics labels,
   and only their size and digest appear in traces.
 - **Database transport.** `sslmode=verify-full` against the environment CA bundle. A plaintext database
-  connection is the last-resort feature `plaintext-database`.
+  connection is the last-resort feature `plaintext-database`: `staging` and `production` refuse it with
+  no override, and `test` and `development` allow it and log each use
+  ([CONVENTIONS](CONVENTIONS.md#environment)).
 - **Service identity.** Mutual TLS 1.3 on the service listener, with `sdk` `tlsconfig.Server` and
   revocation checks.
 
@@ -403,8 +416,9 @@ replicas by whichever one the gateway routes to.
 
 - **Startup** — `name`, `tier`, `id`, and `caBundle` are required, because the service accepts mutual TLS.
 - **Hardened tiers** — `production` and `staging` turn off the OpenAPI UI and require a DSN with
-  `sslmode=verify-full`. `AllowLastResort("plaintext-database")` refuses in `production` unless
-  overridden.
+  `sslmode=verify-full`. `plaintext-database` is refused in both hardened tiers even when named in
+  `overrides` — no override enables it, as none enables the KEK-sealed key stores in `production`
+  (0006) — and `AllowLastResort` permits it, logged, only in `test` and `development`.
 - **Migrations** — `database.autoMigrate` defaults to true only in `development` and `test`. Hardened tiers
   run `rackmarshal-inventory migrate` as a separate, logged deployment step ([0005](0005-infrastructure.md)).
 
@@ -467,6 +481,9 @@ The DSN comes from a file, per [CONVENTIONS.md](CONVENTIONS.md), which replaces 
   auto-registration name collisions, and a principal header from a non-gateway peer.
 - **Event cursor** — concurrent appends for one tenant, committed in the opposite order to their start,
   are read back in commit order and none is skipped.
+- **Management mode** — an `agent`-class endpoint cannot become `active` without an agent binding, an
+  `agentless`-class endpoint cannot be bound to an agent ID, and changing an endpoint's class re-applies
+  the binding rule.
 - **Selectors** — a parser fuzz test plus table tests comparing SQL results with an in-memory evaluator.
 - **Contract** — responses validated against the embedded OpenAPI document (0002's conformance approach).
 

@@ -52,7 +52,8 @@ change, and approving it — are exactly the ones that benefit from a rendered p
 - Run and display plans, and apply them after explicit confirmation.
 - Show reconciliation and enforcement history, including failures with the reason.
 - Let tenant administrators create, list, and revoke enrollment tokens for their tenant; creating one
-  requires step-up. Let every signed-in user create, list, and revoke their own API tokens.
+  requires step-up. Let every signed-in user create, list, and revoke their own API tokens, and let a
+  tenant administrator scope one to `enrollment-tokens:create` for their tenant, with step-up.
 - Nothing else. Every write is a call the gateway already exposes to the `operator` audience.
 
 ### Interfaces
@@ -72,7 +73,7 @@ change, and approving it — are exactly the ones that benefit from a rendered p
 | `/reconciliations`          | Queue and history, with per-endpoint outcome                    | member     |
 | `/agents`                   | Agents in this tenant, certificate expiry, last report          | admin      |
 | `/agents/enrollment-tokens` | Create (step-up), list, revoke                                  | admin      |
-| `/access/api-tokens`        | The signed-in user's tokens                                     | member     |
+| `/access/api-tokens`        | The signed-in user's tokens; enrollment scope (admin, step-up)  | member     |
 | `/access/members`           | Tenant members and role assignment                              | admin      |
 | `/settings`                 | Theme, density, timezone, notification preferences              | member     |
 
@@ -156,6 +157,11 @@ written to disk.
   within the last five minutes, which `identity` enforces from the access token's `auth_time` whatever
   the client, in every tier. The token is bound to the caller's tenant, taken from the session principal
   and never from the request, and keeps 0006's agent-token lifetime (default 1 hour, maximum 24 hours).
+- **Enrollment-scoped API tokens** — the API-token page offers the scope `enrollment-tokens:create` to
+  tenant administrators. The token is bound to the caller's tenant, taken from the session principal, and
+  creating it requires the same step-up. With it, CI creates agent enrollment tokens in that tenant
+  without step-up; `identity` caps each at 1 hour and audits every use, and every other trust-creating
+  operation still refuses the API token ([0006](0006-identity.md)).
 - **CSRF, CSP, session, and step-up** — as 0016 specifies. Beyond enrollment-token issuance, the portal
   relies on its destructive confirmations; the remaining operations that create trust — service
   enrollment approvals and CA and signing-key operations — live in the console.

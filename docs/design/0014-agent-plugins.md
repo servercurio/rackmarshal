@@ -124,10 +124,11 @@ agent-plugins/
 - **`packages`** — `Package` (`name`, optional `version`, `state`) through `apt-get`/`dpkg-query` and
   `dnf`/`rpm`. Arguments go in arrays after `--`, and names must match the schema pattern. Repository
   configuration is out of scope at first.
-- **`files`** — `File` (`path`, `content`, `mode`, `owner`, `group`, `state`) and `Directory`.
-  Content arrives already rendered, so the root plugin has no template engine. Writes are confined to
-  granted prefixes by [`os.Root`](https://pkg.go.dev/os#Root): written to a temporary file, synced, and
-  renamed.
+- **`files`** — `File` (`path`, `content`, `mode`, `owner`, `group`, `state`) and `Directory` (`path`,
+  `mode`, `owner`, `group`, `state`; [0020](0020-desired-state-kinds.md)), which manages the directory
+  itself and never its contents recursively in `v1alpha1`. Content arrives already rendered, so the root
+  plugin has no template engine. Writes are confined to granted prefixes by
+  [`os.Root`](https://pkg.go.dev/os#Root): written to a temporary file, synced, and renamed.
 - **`services`** — `Service` (`name`, `state`, `enabled`). `Plan` reads
   `systemctl show --property=ActiveState,UnitFileState`; `Apply` calls `systemctl`. systemd only.
 - **Why these three resource plugins** — package, file, and service cover basic server convergence,

@@ -350,7 +350,8 @@
         <p>
           Crimson is the brand's loudest value and also the universal color of failure. Using it for
           primary buttons would make every page look like an incident. Plum carries actions; ember is
-          reserved for the mark and for genuinely critical state.
+          reserved for the marks and wordmark, genuinely failed state, and destructive actions. Focus
+          and environment tiers take their own hues for the same reason.
         </p>
       </div>
     </section>
@@ -381,6 +382,11 @@
             <tr><td><span class="dot" style="background:#7E4E0F"></span>warn</td><td class="num">#7E4E0F</td><td class="num">6.60</td><td class="pass">AA</td><td>Drift, expiry</td></tr>
             <tr><td><span class="dot" style="background:#17795E"></span>ok</td><td class="num">#17795E</td><td class="num">5.01</td><td class="pass">AA</td><td>In sync, verified</td></tr>
             <tr><td><span class="dot" style="background:#948089"></span>border-strong</td><td class="num">#948089</td><td class="num">3.45</td><td class="pass">AA&nbsp;1.4.11</td><td>Input and control edges</td></tr>
+            <tr><td><span class="dot" style="background:#1F5BC4"></span>focus</td><td class="num">#1F5BC4</td><td class="num">5.87</td><td class="pass">AA&nbsp;1.4.11</td><td>Focus ring on light; blue, apart from plum and ember</td></tr>
+            <tr><td><span class="dot" style="background:#8A1866"></span>tier-production</td><td class="num">#8A1866</td><td class="num">8.19</td><td class="pass">AAA</td><td>Production stripe and label</td></tr>
+            <tr><td><span class="dot" style="background:#5B3FA0"></span>tier-staging</td><td class="num">#5B3FA0</td><td class="num">7.39</td><td class="pass">AAA</td><td>Staging stripe and label</td></tr>
+            <tr><td><span class="dot" style="background:#2F5E8A"></span>tier-test</td><td class="num">#2F5E8A</td><td class="num">6.37</td><td class="pass">AA</td><td>Test stripe and label</td></tr>
+            <tr><td><span class="dot" style="background:#6B6B6B"></span>tier-development</td><td class="num">#6B6B6B</td><td class="num">5.00</td><td class="pass">AA</td><td>Development stripe and label</td></tr>
             <tr><td><span class="dot" style="background:#E6DCDD"></span>border</td><td class="num">#E6DCDD</td><td class="num">1.26</td><td class="aaa">decorative</td><td>Rules only &mdash; never a control edge</td></tr>
           </tbody>
         </table>
@@ -401,6 +407,10 @@
             <tr><td><span class="dot" style="background:#4FBF9B"></span>ok</td><td class="num">#4FBF9B</td><td class="num">8.09</td><td class="pass">AAA</td><td>In sync, verified</td></tr>
             <tr><td><span class="dot" style="background:#F7BB7A"></span>spark</td><td class="num">#F7BB7A</td><td class="num">10.79</td><td class="pass">AAA</td><td>Focus ring on dark</td></tr>
             <tr><td><span class="dot" style="background:#8C6673"></span>border-strong</td><td class="num">#8C6673</td><td class="num">3.73</td><td class="pass">AA&nbsp;1.4.11</td><td>Input and control edges; lifted from #7C5763, which failed at 2.97</td></tr>
+            <tr><td><span class="dot" style="background:#F28BD6"></span>tier-production</td><td class="num">#F28BD6</td><td class="num">8.25</td><td class="pass">AAA</td><td>Production stripe and label</td></tr>
+            <tr><td><span class="dot" style="background:#9E8BE0"></span>tier-staging</td><td class="num">#9E8BE0</td><td class="num">6.31</td><td class="pass">AA</td><td>Staging stripe and label</td></tr>
+            <tr><td><span class="dot" style="background:#7AA6D6"></span>tier-test</td><td class="num">#7AA6D6</td><td class="num">7.21</td><td class="pass">AAA</td><td>Test stripe and label</td></tr>
+            <tr><td><span class="dot" style="background:#8F8F8F"></span>tier-development</td><td class="num">#8F8F8F</td><td class="num">5.68</td><td class="pass">AA</td><td>Development stripe and label</td></tr>
             <tr><td><span class="dot" style="background:#37222A"></span>border</td><td class="num">#37222A</td><td class="num">1.25</td><td class="aaa">decorative</td><td>Rules only &mdash; never a control edge</td></tr>
           </tbody>
         </table>
@@ -677,8 +687,8 @@
         The wordmark is two-tone, the same move the Server Curio wordmark makes with &ldquo;Server&rdquo;
         and &ldquo;Curio&rdquo;: &ldquo;Rack&rdquo; takes the hot value, &ldquo;marshal&rdquo; the deep
         one. The accent flips by theme because neither value survives both grounds &mdash; Spark measures
-        1.59 on Quench and Ember 3.00 on Anvil &mdash; so Spark stands in for Ember on dark, exactly as
-        <code>--focus</code> already does.
+        1.59 on Quench and Ember 3.00 on Anvil &mdash; so Spark stands in for Ember on dark, the value
+        <code>--focus</code> also takes there.
       </p>
       <div class="lockup-row" style="margin-top:var(--space-6)">
         <div>

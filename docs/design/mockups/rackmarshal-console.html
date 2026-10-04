@@ -67,7 +67,7 @@
     padding: var(--space-3) var(--space-6); border-bottom: 1px solid var(--border);
     background: var(--surface); position: sticky; top: 0; z-index: 5;
   }
-  /* production: the tier stripe is Ember, the loudest value in the ramp */
+  /* production: the tier stripe is the plum-magenta tier hue, the most saturated of the four tiers */
   .env {
     display: inline-flex; align-items: center; gap: var(--space-2);
     font-family: var(--font-mono); font-size: var(--text-xs);
@@ -830,8 +830,8 @@
               <tr><td class="mono">/service/rackmarshal-gateway</td><td class="mono">3f:a1:09:cc</td><td class="mono">service</td><td class="mono">in 5d</td><td><span class="pill s-ok"><span class="dot"></span>valid</span></td></tr>
               <tr><td class="mono">/service/rackmarshal-identity</td><td class="mono">7b:2e:41:90</td><td class="mono">service</td><td class="mono">in 5d</td><td><span class="pill s-ok"><span class="dot"></span>valid</span></td></tr>
               <tr><td class="mono">/service/rackmarshal-inventory</td><td class="mono">1c:88:d0:3a</td><td class="mono">service</td><td class="mono">in 6d</td><td><span class="pill s-ok"><span class="dot"></span>valid</span></td></tr>
-              <tr><td class="mono">/agent/7f3k2m9d4b</td><td class="mono">9a:05:be:71</td><td class="mono">agent</td><td class="mono">in 7d</td><td><span class="pill s-ok"><span class="dot"></span>valid</span></td></tr>
-              <tr><td class="mono">/agent/6r3t8y2u4i</td><td class="mono">2d:63:1f:84</td><td class="mono">agent</td><td class="mono">in 2d</td><td><span class="pill s-warn"><span class="dot"></span>renewing</span></td></tr>
+              <tr><td class="mono">/agent/7f3k2m6d4b</td><td class="mono">9a:05:be:71</td><td class="mono">agent</td><td class="mono">in 7d</td><td><span class="pill s-ok"><span class="dot"></span>valid</span></td></tr>
+              <tr><td class="mono">/agent/6r3t5y2u4i</td><td class="mono">2d:63:1f:84</td><td class="mono">agent</td><td class="mono">in 2d</td><td><span class="pill s-warn"><span class="dot"></span>renewing</span></td></tr>
               <tr><td class="mono">/control-node/cn-prod-01</td><td class="mono">5e:97:22:ab</td><td class="mono">control-node</td><td class="mono">&mdash;</td><td><span class="pill s-crit"><span class="dot"></span>revoked</span></td></tr>
             </tbody>
           </table>
@@ -883,8 +883,8 @@
             <thead><tr><th>Serial</th><th>SPIFFE ID</th><th>Reason</th><th>Revoked</th></tr></thead>
             <tbody>
               <tr><td class="mono">5e:97:22:ab</td><td class="mono">/control-node/cn-prod-01</td><td class="mono">keyCompromise</td><td class="mono">08:31:55Z</td></tr>
-              <tr><td class="mono">c4:11:7d:62</td><td class="mono">/agent/8k2m4p9x1z</td><td class="mono">cessationOfOperation</td><td class="mono">2026-09-14</td></tr>
-              <tr><td class="mono">a0:3e:95:18</td><td class="mono">/agent/5t7y2u8i3o</td><td class="mono">superseded</td><td class="mono">2026-09-02</td></tr>
+              <tr><td class="mono">c4:11:7d:62</td><td class="mono">/agent/3k2m4p7x2z</td><td class="mono">cessationOfOperation</td><td class="mono">2026-09-14</td></tr>
+              <tr><td class="mono">a0:3e:95:18</td><td class="mono">/agent/5t7y2u6i3o</td><td class="mono">superseded</td><td class="mono">2026-09-02</td></tr>
             </tbody>
           </table>
         </div>
@@ -906,11 +906,11 @@
           <table>
             <thead><tr><th>Agent ID</th><th>Tenant</th><th>Endpoint</th><th>Version</th><th>Certificate</th><th>Last report</th></tr></thead>
             <tbody>
-              <tr><td class="mono">7f3k2m9d4b</td><td>northwind</td><td>web-01</td><td class="mono">0.4.2</td><td class="mono">in 7d</td><td class="mono">2m ago</td></tr>
-              <tr><td class="mono">4b8n2c9v5k</td><td>northwind</td><td>db-02</td><td class="mono">0.4.2</td><td class="mono">in 7d</td><td class="mono">1m ago</td></tr>
-              <tr><td class="mono">6r3t8y2u4i</td><td>northwind</td><td>cache-01</td><td class="mono">0.4.1</td><td class="mono" style="color:var(--warn)">in 2d</td><td class="mono" style="color:var(--warn)">3h 22m ago</td></tr>
-              <tr><td class="mono">3x9c5v1b7n</td><td>eastbrook</td><td>app-14</td><td class="mono">0.4.2</td><td class="mono">in 6d</td><td class="mono">4m ago</td></tr>
-              <tr><td class="mono">8m2k6j4h0g</td><td>meridian</td><td>etl-02</td><td class="mono">0.4.2</td><td class="mono">in 4d</td><td class="mono">1m ago</td></tr>
+              <tr><td class="mono">7f3k2m6d4b</td><td>northwind</td><td>web-01</td><td class="mono">0.4.2</td><td class="mono">in 7d</td><td class="mono">2m ago</td></tr>
+              <tr><td class="mono">4b6n2c7v5k</td><td>northwind</td><td>db-02</td><td class="mono">0.4.2</td><td class="mono">in 7d</td><td class="mono">1m ago</td></tr>
+              <tr><td class="mono">6r3t5y2u4i</td><td>northwind</td><td>cache-01</td><td class="mono">0.4.1</td><td class="mono" style="color:var(--warn)">in 2d</td><td class="mono" style="color:var(--warn)">3h 22m ago</td></tr>
+              <tr><td class="mono">3x4c5v2b7n</td><td>eastbrook</td><td>app-14</td><td class="mono">0.4.2</td><td class="mono">in 6d</td><td class="mono">4m ago</td></tr>
+              <tr><td class="mono">2m3k6j4h5g</td><td>meridian</td><td>etl-02</td><td class="mono">0.4.2</td><td class="mono">in 4d</td><td class="mono">1m ago</td></tr>
             </tbody>
           </table>
         </div>

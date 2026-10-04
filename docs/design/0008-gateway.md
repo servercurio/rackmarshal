@@ -100,6 +100,12 @@ own audience's credential: a bearer token with one of `x-rackmarshal-roles` on t
 verified agent certificate on the agent ingress, and an allowed service certificate on a direct
 `internal` call.
 
+An operation that takes no credential is named, never inferred: the only such contract operations are
+those on [0002](0002-api-schema.md)'s `operationId` allowlist of unauthenticated operations — enrollment
+and health — which lint and the gateway share, and the gateway exempts nothing else from its credential
+check. `GET /gateway/v1alpha1/environment` (below) is not a contract operation: the gateway serves it
+itself, so it needs no allowlist entry.
+
 Before matching, the gateway rejects with `400` any path that contains `..` segments, `//`, percent-encoded
 `/` or `\`, or invalid UTF-8, and any query string that `url.ParseQuery` rejects. That way the gateway
 and the upstream service never interpret a request differently, a risk the `ReverseProxy.Rewrite`
@@ -479,8 +485,6 @@ omitted here.
   would break client pinning (the same question is open in 0003).
 - **Principal header** — accept `X-Rackmarshal-Principal` over mutual TLS, or forward tokens? Does
   `pkg/principal` belong in `sdk`?
-- **Unauthenticated operations** — 0002's lint allowlist names only enrollment and health. Add
-  `GET /gateway/v1alpha1/environment`?
 - **Agent tenant lookup** — is a 5-minute cache TTL right? Disabling an agent already revokes its
   certificate in the same transaction (0006), so the revocation check, not this cache, cuts it off.
 

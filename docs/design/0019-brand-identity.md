@@ -53,7 +53,7 @@ themes.
 | Anvil  | `#15090E` | Derived — near-black, plum-biased | Dark ground                     |
 | Plum   | `#4D1229` | Outer ring, "Curio" wordmark  | Primary action                      |
 | Rose   | `#993744` | Middle ring, tagline          | Secondary, quiet emphasis           |
-| Ember  | `#B61F33` | S-spiral, "Server" wordmark   | The mark, and critical state only   |
+| Ember  | `#B61F33` | S-spiral, "Server" wordmark   | Marks, failure, destructive actions |
 | Spark  | `#F7BB7A` | The three spark dots          | Highlight fill, focus ring on dark  |
 | Quench | `#FAF7F5` | Derived — warm off-white      | Light ground                        |
 
@@ -69,8 +69,9 @@ actual one. So:
 
 - **Plum** carries primary actions — buttons, links, active navigation. At `13.73:1` on Quench it is
   among the most legible values available, which suits a control.
-- **Ember** appears in the marks and wordmarks, and otherwise only where something has genuinely failed or
-  an action is destructive.
+- **Ember** appears only in the marks and wordmarks, where something has genuinely failed, and on
+  destructive actions. The focus ring and the environment tiers take their own hues, so neither borrows
+  failure's color.
 
 This is the one rule in this document that a designer would not arrive at from the mark alone, and it is
 the reason the system does not look like an alert.
@@ -89,6 +90,7 @@ Every pair below was computed from WCAG relative luminance rather than judged by
 | `critical`      | `#B61F33` | 6.09 AA   | `#EA5468` | 5.22 AA              | 5.54 AA            |
 | `warn`          | `#7E4E0F` | 6.60 AA   | `#E0A355` | 8.34 AAA             | 8.86 AAA           |
 | `ok`            | `#17795E` | 5.01 AA   | `#4FBF9B` | 8.09 AAA             | 8.59 AAA           |
+| `focus`         | `#1F5BC4` | 5.87      | `#F7BB7A` | 10.79                | 11.46              |
 | `border-strong` | `#948089` | 3.45      | `#8C6673` | 3.73                 | 3.96               |
 | `border`        | `#E6DCDD` | 1.26      | `#37222A` | 1.25                 | 1.32               |
 
@@ -126,12 +128,25 @@ A generic success/warning/error triple would not cover what these surfaces must 
 profiles open needs to know which one a destructive control belongs to. The tier renders as a left
 stripe rather than a filled badge, because it is ambient context rather than an alert.
 
-| Tier          | Light     | Dark      |
-|---------------|-----------|-----------|
-| `production`  | `#B61F33` | `#EA5468` |
-| `staging`     | `#7E4E0F` | `#E0A355` |
-| `test`        | `#17795E` | `#4FBF9B` |
-| `development` | `#6B5560` | `#B39BA3` |
+The tiers have their own palette, kept clear of Ember and of the `ok`, `warn`, `critical`, and `unknown`
+colors so a tier never reads as a state. Production is plum-magenta and the most saturated and
+highest-contrast of the four in both themes, so it stays the most prominent; staging is violet, test slate
+blue, and development a pure neutral gray — the one unbiased gray in the system, so it does not match
+`unknown`. The tier colors both the 3 px stripe and its 12 px label, which sits on `surface-sunken`, so
+each value clears the 4.5:1 text minimum against all three grounds, above the 3:1 the stripe alone needs
+under [SC 1.4.11](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast). Ratios are on bg /
+surface / sunken (light `#FAF7F5` / `#FFFFFF` / `#F2ECEA`; dark `#15090E` / `#1F1016` / `#100609`):
+
+| Tier          | Light     | Light ratios       | Dark      | Dark ratios        |
+|---------------|-----------|--------------------|-----------|--------------------|
+| `production`  | `#8A1866` | 8.19 / 8.74 / 7.47 | `#F28BD6` | 8.76 / 8.25 / 8.97 |
+| `staging`     | `#5B3FA0` | 7.39 / 7.88 / 6.74 | `#9E8BE0` | 6.70 / 6.31 / 6.87 |
+| `test`        | `#2F5E8A` | 6.37 / 6.80 / 5.81 | `#7AA6D6` | 7.66 / 7.21 / 7.84 |
+| `development` | `#6B6B6B` | 5.00 / 5.33 / 4.56 | `#8F8F8F` | 6.03 / 5.68 / 6.17 |
+
+The light `focus` ring left Ember for the same reason: a focused control must not look failed. It is
+blue, `#1F5BC4` (5.87 on Quench, 6.27 on white), apart in hue from both Plum action and Ember. Dark keeps
+Spark.
 
 ### Type
 
@@ -261,18 +276,18 @@ the file matching its ground.
 **The lockup wordmark is two-tone, the same move the Server Curio wordmark makes.** "Server" is Ember and
 "Curio" is Plum; "Rack" takes the hot value and "marshal" the deep one, so the two lockups are recognizably
 the same construction. The accent flips by theme because neither value survives both grounds — Spark
-measures `1.59` on Quench, Ember `3.00` on Anvil — so Spark stands in for Ember on dark exactly as
-`--focus` already does in `tokens.css`:
+measures `1.59` on Quench, Ember `3.00` on Anvil — so Spark stands in for Ember on dark, the value
+`--focus` also takes there in `tokens.css`:
 
 | File                          | "Rack"            | "marshal"          |
 |-------------------------------|-------------------|--------------------|
 | `rackmarshal-lockup.svg`      | Ember `6.09` AA   | Plum `13.73` AAA   |
 | `rackmarshal-lockup-dark.svg` | Spark `11.46` AAA | Quench `18.27` AAA |
 
-This is the one place Ember appears outside the Server Curio mark and critical state. It is confined to
-four letters of a wordmark, never a fill or a control, so the ramp rule — crimson stays free to mean
-failure — holds. The icon files remain Ember-free, which is what keeps a masthead or favicon from reading
-as an alert.
+This is the one place Ember appears outside the Server Curio mark, failure, and destructive actions. It
+is confined to four letters of a wordmark, never a fill or a control, so the ramp rule — crimson stays
+free to mean failure — holds. The icon files remain Ember-free, which is what keeps a masthead or favicon
+from reading as an alert.
 
 **Minimum size is 32 px for the icon.** The rack indicators simplify as the mark is reduced; below 32 px
 a dedicated simplified favicon is preferable to shrinking this one. The lockup's wordmark sets its own
@@ -320,6 +335,9 @@ palette, `prefers-color-scheme` redefines tokens for viewers on the system defau
   engineering provenance that suits the subject.
 - **Keeping Open Sans throughout**, matching the tagline in the mark. It would remove the discrepancy
   noted above, at the cost of a body face chosen in 2011 for a different purpose.
+- **Reusing the state colors for tiers** — the first palette drew production from Ember, staging from
+  `warn`, and test from `ok`. Rejected because a production stripe then read as a failure and a test
+  stripe as a success.
 - **Full inversion for the dark theme** — mechanically simple. Rejected because three of the light
   values fail against a dark ground; each was lifted individually and re-measured.
 
@@ -329,8 +347,6 @@ palette, `prefers-color-scheme` redefines tokens for viewers on the system defau
   a protected file, or keep Open Sans and record it as a permanent exception?
 - **Dark as the default** — infrastructure operators frequently prefer it. Should hardened tiers
   default to dark regardless of the system setting, or is that an unwelcome override?
-- **A production visual treatment** — beyond the tier stripe, should `production` carry a stronger
-  persistent signal, such as a masthead rule in Ember?
 - **Filled variants** — the drawn glyphs are stroke-only. Does a selected navigation item need a filled
   counterpart, and if so must filled versions of the adopted icons be drawn as well?
 - **Agentless endpoints** — 0011 enforces agentless devices directly. Does that path need its own

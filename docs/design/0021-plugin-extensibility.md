@@ -154,7 +154,9 @@ none:
   describes.
 
 The bundle also carries the result schema that both ends validate against (see The result round trip), so
-a plugin with no running provisioner half still gets its results checked at the control plane.
+a plugin with no running provisioner half still gets its results checked at the control plane. The agent
+gets its copies of the kind and result schemas, and the `host`-phase Rego, inside the signed directive
+bundle, never from the provisioner bundle directly (see Plugin-supplied policy).
 
 These are standalone JSON Schema files, and that does not conflict with 0020's rule that a kind is
 described only by its Go type: that rule covers the kinds `api-schema` defines. A plugin-defined kind has
@@ -289,7 +291,8 @@ record — so it degrades to a resource-level failure carrying `result_invalid`.
 
 The schema each check uses is the one the plugin publishes with the version that is pinned, so both ends
 validate against the same definition by construction: the pin covers the schema exactly as it covers the
-binary and the policy.
+binary and the policy, and the agent receives that schema inside the directive bundle `provisioner`
+signs.
 
 **This amended 0011's "never content" rule, and the amendment is narrower than it sounds.** That rule
 exists to keep file bodies out of the provisioner's database — a privacy and size control, written when
@@ -306,12 +309,14 @@ outcome rather than a corner case.
 
 #### Plugin-supplied policy
 
-Every plugin ships Rego, because the provisioner bundle is mandatory and `policy/` is part of it. It is
-carried where each side's trust already comes from: the agent half's copy travels in the manifest that
-`GetManifest` returns, "trusted only as far as the verified publisher" (0013), and the control plane's
-comes from the bundle, verified at import through the same sigstore-go chain that already writes
-`plugin_verifications` (0011). One trust root, two delivery paths, no new verification code — and no
-executable involved in either.
+Every plugin ships Rego, because the provisioner bundle is mandatory and `policy/` is part of it. The
+control plane's copy comes from the bundle, verified at import through the same sigstore-go chain that
+already writes `plugin_verifications` (0011). The agent never downloads a provisioner bundle and never
+takes policy from a plugin's `GetManifest`: for each plugin kind a host's resources use, `provisioner`
+embeds that kind's schemas and the plugin's `host`-phase Rego, taken from the verified bundle, in the
+directive bundle it signs for that host ([0011](0011-provisioner.md), [0012](0012-agent.md)). The agent
+validates and evaluates from the directive bundle, whose DSSE signature it already verifies. One trust
+root, one verified copy, no new verification code — and no executable involved in either.
 
 ```yaml
 # manifest.yaml, additions
@@ -323,6 +328,13 @@ policies:
     package: rackmarshal.plugin.bigip.host
     file: policy/host.rego
 ```
+
+Each package is `rackmarshal.plugin.<segment>.<phase>`. A plugin name is a lowercase DNS label (0013),
+and `-` is not valid in an unquoted Rego package segment
+([Rego packages](https://www.openpolicyagent.org/docs/policy-language#packages)), so the segment is the
+name with each `-` replaced by `_`: `acme-backup` owns `rackmarshal.plugin.acme_backup`. Import refuses a
+policy whose package is outside its plugin's prefix or names a phase other than its own, and refuses a
+plugin whose segment is already taken by another plugin's name.
 
 Four rules make this safe, and the first is the one that matters:
 
@@ -409,7 +421,12 @@ and is rebuilt on a pin change like any other bundle input.
   `spiffe://<environment-id>/service/identity` only in the enrollment init container
   ([0005](0005-infrastructure.md)), and the sidecar mounts the socket `emptyDir` and its own key volume,
   never the provisioner's. A pod has one service account, mapped to `provisioner`, so the sidecar cannot
-  enroll with the pod's projected token; how it enrolls is an open question. A `NetworkPolicy`
+  enroll with the pod's projected token. It enrolls instead with a single-use service enrollment token
+  for `service/plugin-<name>`, one per sidecar, that the control node issues
+  ([0005](0005-infrastructure.md), [0006](0006-identity.md)) and mounts as a
+  [Secret](https://kubernetes.io/docs/concepts/configuration/secret/) only into the sidecar container;
+  the provisioner container and the init container do not mount it, and the socket stays on the shared
+  `emptyDir`. A `NetworkPolicy`
   ([network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)) can
   narrow what the whole pod reaches but applies per pod, so it cannot separate the sidecar from the
   provisioner; that takes a separate pod, which trades the local socket for a network listener.
@@ -472,6 +489,9 @@ out at build time rather than at import.
 - **Scoping** — a plugin policy that denies a kind outside its grant has no effect; a table across the
   built-in kinds and a second plugin's kinds asserts it, and this is the test that must not be skipped.
 - **Denial only** — a plugin policy defining `allow` cannot widen platform or tenant denials.
+- **Package names** — a policy package outside `rackmarshal.plugin.<segment>`, or for the wrong phase,
+  fails import; `acme-backup` maps to `acme_backup`; a second plugin whose name maps to a taken segment
+  fails import.
 - **Result bounds** — oversized, malformed, and non-conforming results become resource-level failures and
   never reject a report; truncation sets its condition and its metric.
 - **Bidirectional validation** — all four checkpoints reject a payload that violates the pinned schema,
@@ -479,12 +499,19 @@ out at build time rather than at import.
   by the agent, and an agent that reports an invalid result is caught by the provisioner.
 - **Proposals** — `Propose` output passes through admission and is denied by the tenant's policy when the
   tenant denies it, and by the plugin's own policy when the plugin does.
+- **Sidecar enrollment** — on Kubernetes the sidecar enrolls as `service/plugin-<name>` with its own
+  enrollment token, the token Secret is mounted in the sidecar container and in neither the provisioner
+  nor the init container, and a reused token is refused.
 - **Process model** — the plugin host reconnects when a crashed service restarts, and a service that
   is down fails that plugin's calls rather than `provisioner`. The host refuses a peer whose SPIFFE ID
   is not the pinned plugin's `plugin-<name>`, and a service whose manifest name or version differs from
   the pin.
 - **Determinism** — the same documents, facts, and plugin pins produce the same bundle digest with plugin
   policy in the evaluation set.
+- **Directive-bundle embedding** — a host whose resources use a plugin kind receives that kind's
+  schemas and the plugin's `host` Rego in its signed directive bundle, and a host that uses none receives
+  none; an agent rejects a bundle that names a plugin kind without its schema, and never fetches a
+  provisioner bundle.
 
 ## Alternatives considered
 
@@ -500,6 +527,10 @@ out at build time rather than at import.
   The service that holds the database credentials would launch and supervise third-party binaries
   itself, so their lifecycle and failures would be its own. A separate process with its own lifecycle
   keeps them apart and costs a socket.
+- **A separate pod per provisioner service on Kubernetes**, with its own service account and projected
+  token — a cleaner credential boundary than a mounted enrollment token, and a `NetworkPolicy` could then
+  separate it from `provisioner`, but the local socket becomes a network listener. A token mounted only
+  into the sidecar gives it its own identity while keeping the socket.
 - **REST + JSON between the provisioner and its plugins**, to avoid amending the convention — consistent
   with service-to-service traffic, but a plugin author would then implement two wire protocols for one
   plugin, and the contract for the two halves would diverge over time. Widening the existing plugin
@@ -527,10 +558,6 @@ out at build time rather than at import.
   decide whether the tagged build is the default in released artifacts.
 - **`AgentPlugin` migration** — rename with an alias for one release, or a breaking change while every
   kind is still `v1alpha1`?
-- **Sidecar enrollment on Kubernetes** — the pod's one service account maps to `provisioner`, so the
-  sidecar needs another credential: a service enrollment token for `plugin-<name>` mounted only into its
-  container, or a separate pod with its own service account, which trades the local socket for a network
-  listener?
 - **Sidecar lifecycle on Kubernetes** — a native sidecar (an init container with `restartPolicy: Always`)
   ties the plugin's lifetime to the pod's; is that the right coupling for a plugin that fails repeatedly?
 - **Proposal loops** — a plugin whose `Propose` output triggers a report that triggers another proposal.
